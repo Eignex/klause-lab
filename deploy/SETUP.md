@@ -49,13 +49,13 @@ still run, so one bad instance does not stop a sweep.
    setting commented out at its default; rerun the script after changing it. On macOS it asks for sudo to install the launchd daemons. Set
    `sudo pmset -a sleep 0 disksleep 0` so queued work is not suspended.
 4. From the dev PC, copy the corpus over (51 GB on the first run, incremental after that):
-   `LAB_HOST=<server> deploy/lab corpus`.
+   `deploy/lab corpus`.
 
 Logs go to `$LAB_DATA/logs/{api,runner}.log`.
 
 ## Client
 
-`deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` (default `lab.local`).
+`deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` to override the default server, `192.168.50.104`.
 
 ```sh
 cat > sweep.txt <<'EOF'

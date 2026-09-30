@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to lab.local.
+# Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab submit <name> <ref> <commands-file> [timeout-sec]   one shell command per line; blank and # lines skipped
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> <n> [out|err]
 #   lab fetch <id> [dest]                                    rsync the job's output directory over SSH
 #   lab corpus                                               rsync the local bench corpus to the server
 set -euo pipefail
-host="${LAB_HOST:-lab.local}"
+host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"
 data="${LAB_REMOTE_DATA:-klause-lab-data}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
