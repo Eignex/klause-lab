@@ -10,6 +10,13 @@ set -a; . "$envfile"; set +a
 LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
 mkdir -p "$LAB_DATA/logs"
 
+# Toolchains are always provisioned, never taken from the host: a package-manager JDK can carry a trust store
+# that lacks roots the corpus hosts use (Homebrew's openjdk refuses miplib.zib.de).
+props="$HOME/.gradle/gradle.properties"
+mkdir -p "$(dirname "$props")"
+grep -q '^org.gradle.java.installations.auto-detect=' "$props" 2>/dev/null ||
+  echo 'org.gradle.java.installations.auto-detect=false' >> "$props"
+
 # Gradle itself needs a Java to launch; any 17+ on PATH does. The services run on the toolchain JDK.
 command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
 (cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
