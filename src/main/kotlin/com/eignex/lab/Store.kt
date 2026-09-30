@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.ResultSet
+import java.util.Properties
 
 @Serializable
 enum class Status { QUEUED, RUNNING, DONE, FAILED, CANCELLED }
@@ -43,7 +44,12 @@ data class Job(
  * Every state change is one transaction; WAL mode lets the API read while the runner writes.
  */
 class Store(file: Path) {
-    private val connection: Connection = DriverManager.getConnection("jdbc:sqlite:$file").apply {
+    // IMMEDIATE takes the write lock at BEGIN. A deferred transaction that reads and then writes cannot wait for a
+    // lock the other process holds, and fails with SQLITE_BUSY instead of honouring the busy timeout.
+    private val connection: Connection = DriverManager.getConnection(
+        "jdbc:sqlite:$file",
+        Properties().apply { setProperty("transaction_mode", "IMMEDIATE") },
+    ).apply {
         createStatement().use {
             it.execute("PRAGMA journal_mode=WAL")
             it.execute("PRAGMA synchronous=FULL")

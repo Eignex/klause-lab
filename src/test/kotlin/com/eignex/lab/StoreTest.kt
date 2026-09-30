@@ -2,10 +2,32 @@ package com.eignex.lab
 
 import java.nio.file.Files
 import kotlin.test.Test
+import kotlin.concurrent.thread
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class StoreTest {
     private fun store() = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+
+    @Test
+    fun `a cancel from a second process lands while the other one keeps writing`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val runner = Store(file)
+        val api = Store(file)
+        val id = runner.create("a", "main", List(200) { "true" to 10L })
+        runner.next()
+        val writer = thread {
+            repeat(200) { index ->
+                runner.commandStarted(id, index)
+                runner.commandFinished(id, index, 0)
+            }
+        }
+
+        val cancelled = api.requestCancel(id)
+        writer.join()
+
+        assertTrue(cancelled && runner.cancelRequested(id))
+    }
 
     @Test
     fun `a job left running by a crashed runner is resumed before a queued one`() {
