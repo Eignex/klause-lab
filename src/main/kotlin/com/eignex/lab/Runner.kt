@@ -18,6 +18,9 @@ class Runner(private val config: Config, private val store: Store) {
     @Volatile
     private var current: Process? = null
 
+    @Volatile
+    private var stopping = false
+
     fun loop() {
         config.dataDir.createDirectories()
         while (true) {
@@ -114,7 +117,7 @@ class Runner(private val config: Config, private val store: Store) {
     private fun await(job: Job, command: Command, dir: Path, process: Process): Int {
         val deadline = now() + command.timeoutSec * 1000
         while (!process.waitFor(CANCEL_POLL_MS, TimeUnit.MILLISECONDS)) {
-            if (store.cancelRequested(job.id)) {
+            if (!stopping && store.cancelRequested(job.id)) {
                 killTree(process)
                 return CANCELLED_EXIT
             }
@@ -124,6 +127,9 @@ class Runner(private val config: Config, private val store: Store) {
                 return TIMEOUT_EXIT
             }
         }
+        // A command the shutdown killed has no result. Leaving it RUNNING in the store makes the next runner
+        // rerun it, as it would after a crash; recording the kill would mark it failed and skip it.
+        while (stopping) Thread.sleep(CANCEL_POLL_MS)
         val exit = process.exitValue()
         dir.resolve("${command.index}.exit").writeAtomically(exit.toString())
         return exit
@@ -149,7 +155,12 @@ class Runner(private val config: Config, private val store: Store) {
 
     /** Kill the running command's tree when the service manager stops the runner. */
     fun installShutdownHook() {
-        Runtime.getRuntime().addShutdownHook(Thread { current?.let(::killTree) })
+        Runtime.getRuntime().addShutdownHook(
+            Thread {
+                stopping = true
+                current?.let(::killTree)
+            },
+        )
     }
 
     private fun cancel(jobId: Long) {
