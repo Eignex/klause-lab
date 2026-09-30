@@ -41,11 +41,12 @@ still run, so one bad instance does not stop a sweep.
 
 ## Setup
 
-1. Install a JDK 25 and git on the server.
+1. Install git and any JDK 17 or newer on the server; Gradle needs one to launch. The Gradle toolchain downloads
+   JDK 25, and the services and the klause builds run on that.
 2. Give the server read access to the klause repository: a deploy key or its own SSH key on GitHub.
-3. Clone this repository on the server and run `deploy/install.sh`. The first run writes
-   `~/.config/klause-lab/lab.env` and stops. Fill that file in, then run the script again. It builds the lab, runs
-   the host check, and registers both services. On macOS it asks for sudo to install the launchd daemons. Set
+3. Clone this repository on the server and run `deploy/install.sh`. It builds the lab, runs the host check, and
+   registers both services. Settings live in `~/.config/klause-lab/lab.env`, which the first run creates with every
+   setting commented out at its default; rerun the script after changing it. On macOS it asks for sudo to install the launchd daemons. Set
    `sudo pmset -a sleep 0 disksleep 0` so queued work is not suspended.
 4. From the dev PC, copy the corpus over (51 GB on the first run, incremental after that):
    `LAB_HOST=<server> deploy/lab corpus`.

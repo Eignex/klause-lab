@@ -4,12 +4,18 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 envfile="$HOME/.config/klause-lab/lab.env"
-[[ -f "$envfile" ]] || { mkdir -p "$(dirname "$envfile")"; cp "$here/deploy/lab.env.example" "$envfile"; echo "edit $envfile, then rerun"; exit 1; }
+[[ -f "$envfile" ]] || { mkdir -p "$(dirname "$envfile")"; cp "$here/deploy/lab.env.example" "$envfile"; }
+unset JAVA_HOME
 set -a; . "$envfile"; set +a
-[[ -x "$JAVA_HOME/bin/java" ]] || { echo "JAVA_HOME in $envfile is not a JDK"; exit 1; }
+LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
 mkdir -p "$LAB_DATA/logs"
 
+# Gradle itself needs a Java to launch; any 17+ on PATH does. The services run on the toolchain JDK.
+command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
 (cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
+JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
+export JAVA_HOME
+echo "services run on $JAVA_HOME"
 bin="$here/build/install/klause-lab/bin/klause-lab"
 "$bin" check   # fails here, before anything is registered, on a host without BLAS
 
@@ -35,8 +41,10 @@ Darwin)
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>$PATH</string>
     <key>HOME</key><string>$HOME</string>
+    <key>JAVA_HOME</key><string>$JAVA_HOME</string>
 PLIST
-      grep -v '^\s*#' "$envfile" | grep '=' | while IFS='=' read -r key value; do
+      grep -v '^\s*#' "$envfile" | grep '=' | grep -v '^JAVA_HOME=' | while IFS='=' read -r key value; do
+        value="${value%\"}"; value="${value#\"}"
         printf '    <key>%s</key><string>%s</string>\n' "$key" "$value"
       done
       echo '  </dict>'
@@ -60,6 +68,7 @@ After=network-online.target
 [Service]
 EnvironmentFile=$envfile
 Environment=PATH=$PATH
+Environment=JAVA_HOME=$JAVA_HOME
 WorkingDirectory=$LAB_DATA
 ExecStart=$bin $role
 Restart=on-failure

@@ -38,3 +38,10 @@ application {
 tasks.withType<Test>().configureEach { jvmArgs(koblasJvmArgs) }
 
 tasks.test { useJUnitPlatform() }
+
+// install.sh runs the services on the toolchain JDK, so the host needs no JDK 25 of its own.
+tasks.register("printJavaHome") {
+    val home = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) }
+        .map { it.metadata.installationPath.asFile.absolutePath }
+    doLast { println(home.get()) }
+}
