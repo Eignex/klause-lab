@@ -2,7 +2,7 @@
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab submit <name> <ref> <commands-file> [timeout-sec]   one shell command per line; blank and # lines skipped
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> <n> [out|err]
-#   lab fetch <id> [dest]                                    rsync the job's output directory over SSH
+#   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
 set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
@@ -22,7 +22,13 @@ ls) curl -fsS "$url/jobs?limit=${1:-30}" | jq -r '.[] | [.id, .status, "\(.comma
 show) curl -fsS "$url/jobs/$1" | jq . ;;
 cancel) curl -fsS -X POST "$url/jobs/$1/cancel"; echo ;;
 tail) curl -fsS "$url/jobs/$1/files/$2.${3:-out}?tail=${TAIL_BYTES:-8000}" ;;
-fetch) mkdir -p "${2:-lab-jobs/$1}"; rsync -az "$host:$data/jobs/$1/" "${2:-lab-jobs/$1}/" ;;
+fetch)
+  dest="${2:-lab-jobs/$1}"; mkdir -p "$dest"
+  curl -fsS "$url/jobs/$1/files" | jq -r '.[] | "\(.path)\t\(.bytes)"' | while IFS=$'\t' read -r path bytes; do
+    [[ -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
+    mkdir -p "$dest/$(dirname "$path")"
+    curl -fsS -o "$dest/$path" "$url/jobs/$1/files/$path"
+  done ;;
 corpus) rsync -az --info=progress2 "$corpus/" "$host:.cache/klause-bench/corpus/" ;;
 health) curl -fsS "$url/health" | jq . ;;
 *) sed -n '2,8p' "$0"; exit 2 ;;

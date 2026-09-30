@@ -65,7 +65,7 @@ EOF
 deploy/lab submit leaf-lp fix/leaf-lp-slice-pause sweep.txt 21600   # optional per-command timeout, seconds
 deploy/lab ls
 deploy/lab tail 7 0          # the last 8 kB of command 0's stdout; `err` for stderr
-deploy/lab fetch 7           # rsync jobs/7/ to ./lab-jobs/7
+deploy/lab fetch 7           # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab cancel 7
 ```
 
