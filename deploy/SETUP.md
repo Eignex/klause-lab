@@ -16,11 +16,14 @@ call, so it is reported and not required. `klause-lab check` prints the report a
 - Every state change is committed before the next step starts. A restarted runner resumes the job it was on:
   - finished commands keep their results;
   - an interrupted command is rerun from the start;
-  - the interrupted command's process tree is killed first. It is found by its recorded pid and start time, so
-    the rerun never runs alongside it.
+  - the interrupted command's processes are killed first, so the rerun never runs alongside them. Each command
+    leads its own process group, and the group is killed whole, including children whose shell already died. A
+    recorded start time keeps a reused pid from being taken for the command.
 - A command's `<n>.exit` file is written atomically once the command ends: an exit code, or `timeout`.
-- The service manager restarts either process after a crash and starts both at boot: launchd daemons on macOS,
-  systemd user units with lingering on Linux.
+- A service shutdown, such as a reboot, kills the running command but does not record it, so it reruns after boot.
+- The service manager restarts either process after a crash and starts both at boot without a login: launchd
+  daemons on macOS, systemd user units with lingering on Linux. On macOS the runner also runs under
+  `caffeinate -i`, which keeps the machine awake while it lives.
 
 ## What a command sees
 
@@ -36,20 +39,46 @@ Commands run with `bash -c`, with the job's worktree as the working directory, a
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
 Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`. Anything else a command writes into `JOB_DIR` is kept
-after the job ends. The worktree is deleted. A job fails if any of its commands fails, but the remaining commands
-still run, so one bad instance does not stop a sweep.
+after the job ends. The worktree is deleted. A failing command does not stop the job: the rest still run, the job
+ends DONE, and the failures are counted on it. FAILED means the job itself could not run, such as a failed checkout
+or build.
+
+`LAB_SHARED_PATHS` names worktree directories every job shares, by default `klause-bench/build/bench-cache`. Bench
+keys a reference result by instance, solver and budget alone, so a later job replays it instead of rerunning the
+solver; a klause result also keys on the CLI binary, which each job builds afresh, so it is never replayed into
+another build.
+
+## Docker
+
+The containerised reference solvers (SCIP, clasp, the XCSP3 cp-sat image) need Docker. `install.sh` picks it up
+by itself: on macOS it installs a boot-time colima daemon when colima is installed (`brew install colima docker`), on
+Linux it uses the system Docker. The runner then waits for `docker info` to answer before it takes a job. Set
+`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once, as a job of their own:
+
+```sh
+printf '%s\n' \
+  'docker build -t klause-scip klause-bench/scip' \
+  'docker build -t klause-clasp klause-bench/clasp' \
+  'docker build -t klause-xcsp3-cpsat klause-bench/xcsp3-cpsat' > images.txt
+deploy/lab submit docker-images main images.txt 3600
+```
 
 ## Setup
 
 1. Install git and any JDK 17 or newer on the server; Gradle needs one to launch. The Gradle toolchain downloads
    JDK 25, and the services and the klause builds run on that.
-2. Give the server read access to the klause repository: a deploy key or its own SSH key on GitHub.
+2. For SSH access from the dev PC, enable Remote Login on macOS and install the PC's key with `ssh-copy-id`. The
+   lab itself clones klause over HTTPS and needs no key.
 3. Clone this repository on the server and run `deploy/install.sh`. It builds the lab, runs the host check, and
-   registers both services. Settings live in `~/.config/klause-lab/lab.env`, which the first run creates with every
-   setting commented out at its default; rerun the script after changing it. On macOS it asks for sudo to install the launchd daemons. Set
-   `sudo pmset -a sleep 0 disksleep 0` so queued work is not suspended.
-4. From the dev PC, copy the corpus over (51 GB on the first run, incremental after that):
-   `deploy/lab corpus`.
+   registers the services. Settings live in `~/.config/klause-lab/lab.env`, which the first run creates with every
+   setting commented out at its default; rerun the script after changing it. The services get a fixed PATH
+   (Homebrew's and the system directories on macOS, `~/.local/bin` and the system ones on Linux); `LAB_PATH` puts
+   more in front. `LAB_INSTALL_DRY_RUN=1 deploy/install.sh` writes the service files to a temporary directory and
+   registers nothing. On macOS it asks for sudo, to install the launchd daemons and to set
+   `pmset -a sleep 0 disksleep 0`.
+4. Bench downloads each corpus collection the first time a job uses it. To copy the dev PC's instead (51 GB on the
+   first run, incremental after that), run `deploy/lab corpus` there; it needs the SSH access from step 2.
+5. Prefer Ethernet to Wi-Fi: a Wi-Fi link that drops leaves the server unreachable while it keeps working.
 
 Logs go to `$LAB_DATA/logs/{api,runner}.log`.
 

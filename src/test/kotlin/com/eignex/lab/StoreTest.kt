@@ -26,7 +26,7 @@ class StoreTest {
         val cancelled = api.requestCancel(id)
         writer.join()
 
-        assertTrue(cancelled && runner.cancelRequested(id))
+        assertTrue(cancelled == CancelOutcome.REQUESTED && runner.cancelRequested(id))
     }
 
     @Test
@@ -61,5 +61,15 @@ class StoreTest {
         store.requestCancel(id)
 
         assertEquals(Status.CANCELLED, store.job(id)!!.status)
+    }
+
+    @Test
+    fun `cancelling a finished job reports it as finished`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L))
+        store.next()
+        store.finish(id, Status.DONE)
+
+        assertEquals(CancelOutcome.FINISHED, store.requestCancel(id))
     }
 }

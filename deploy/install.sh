@@ -1,21 +1,54 @@
 #!/usr/bin/env bash
-# Build klause-lab and register its api and runner services with the host's service manager:
-# launchd on macOS (boot-time daemons that run as this user), systemd user units on Linux.
+# Build klause-lab and register its services with the host's service manager: launchd daemons on macOS, which
+# start at boot without a login and run as this user, and systemd user units with lingering on Linux.
+# LAB_INSTALL_DRY_RUN=1 builds, checks and writes the service files to a temporary directory, and registers nothing.
 set -euo pipefail
+dry="${LAB_INSTALL_DRY_RUN:-}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 envfile="$HOME/.config/klause-lab/lab.env"
-[[ -f "$envfile" ]] || { mkdir -p "$(dirname "$envfile")"; cp "$here/deploy/lab.env.example" "$envfile"; }
-unset JAVA_HOME
+if [[ ! -f "$envfile" ]]; then
+  if [[ -n "$dry" ]]; then envfile="$here/deploy/lab.env.example"
+  else mkdir -p "$(dirname "$envfile")"; cp "$here/deploy/lab.env.example" "$envfile"
+  fi
+fi
+unset JAVA_HOME LAB_DOCKER LAB_PATH
 set -a; . "$envfile"; set +a
 LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
-mkdir -p "$LAB_DATA/logs"
+[[ -n "$dry" ]] || mkdir -p "$LAB_DATA/logs"
+os="$(uname -s)"
 
 # Toolchains are always provisioned, never taken from the host: a package-manager JDK can carry a trust store
 # that lacks roots the corpus hosts use (Homebrew's openjdk refuses miplib.zib.de).
 props="$HOME/.gradle/gradle.properties"
-mkdir -p "$(dirname "$props")"
-grep -q '^org.gradle.java.installations.auto-detect=' "$props" 2>/dev/null ||
+if [[ -z "$dry" ]] && ! grep -q '^org.gradle.java.installations.auto-detect=' "$props" 2>/dev/null; then
+  mkdir -p "$(dirname "$props")"
   echo 'org.gradle.java.installations.auto-detect=false' >> "$props"
+fi
+
+# The services get a fixed PATH rather than this shell's, which may hold per-session directories that vanish.
+case "$os" in
+Darwin) path="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" ;;
+Linux) path="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" ;;
+*) echo "unsupported OS $os"; exit 1 ;;
+esac
+path="${LAB_PATH:+$LAB_PATH:}$path"
+
+# Docker serves the containerised reference solvers. colima runs it headless on macOS, as a daemon of its own.
+docker_mode="${LAB_DOCKER:-}"
+if [[ -z "$docker_mode" ]]; then
+  if [[ "$os" == Darwin ]] && PATH="$path" command -v colima >/dev/null; then docker_mode=colima
+  elif [[ "$os" == Linux ]] && PATH="$path" command -v docker >/dev/null; then docker_mode=system
+  else docker_mode=none
+  fi
+fi
+service_env=()
+case "$docker_mode" in
+colima) service_env+=("DOCKER_HOST=unix://$HOME/.colima/default/docker.sock" "LAB_REQUIRE_DOCKER=true") ;;
+system) service_env+=("LAB_REQUIRE_DOCKER=true") ;;
+none) ;;
+*) echo "LAB_DOCKER must be colima, system or none, not $docker_mode"; exit 1 ;;
+esac
+echo "docker: $docker_mode"
 
 # Gradle itself needs a Java to launch; any 17+ on PATH does. The services run on the toolchain JDK.
 command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
@@ -24,63 +57,110 @@ JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 echo "services run on $JAVA_HOME"
 bin="$here/build/install/klause-lab/bin/klause-lab"
-"$bin" check   # fails here, before anything is registered, on a host without BLAS
+"$bin" check   # fails here, before anything is registered, on a host without SIMD
 
-case "$(uname -s)" in
-Darwin)
-  for role in api runner; do
-    label="com.eignex.klause-lab.$role"
-    plist="/Library/LaunchDaemons/$label.plist"
-    {
-      cat <<PLIST
+# lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an
+# empty array is unbound under `set -u`, hence the guarded expansion.
+owned='JAVA_HOME|PATH|LAB_DOCKER|LAB_PATH'
+[[ "$docker_mode" == colima ]] && owned="$owned|DOCKER_HOST|LAB_REQUIRE_DOCKER"
+[[ "$docker_mode" == system ]] && owned="$owned|LAB_REQUIRE_DOCKER"
+settings() {
+  # grep exits 1 on a lab.env with nothing set, which pipefail would turn into a silent exit.
+  { grep -v '^\s*#' "$envfile" | grep '=' | grep -vE "^($owned)=" || true; } |
+    while IFS='=' read -r key value; do value="${value%\"}"; value="${value#\"}"; echo "$key=$value"; done
+  for entry in ${service_env[@]+"${service_env[@]}"}; do echo "$entry"; done
+}
+
+xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<< "$1"; }
+
+# plist <label> <keep-alive dict> <working dir> <log> <program args...>
+plist() {
+  local label="$1" keepalive="$2" workdir="$3" log="$4"
+  shift 4
+  cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$label</string>
   <key>UserName</key><string>$(id -un)</string>
-  <key>ProgramArguments</key><array><string>$bin</string><string>$role</string></array>
-  <key>WorkingDirectory</key><string>$LAB_DATA</string>
+  <key>ProgramArguments</key><array>
+PLIST
+  for arg in "$@"; do echo "    <string>$(xml "$arg")</string>"; done
+  cat <<PLIST
+  </array>
+  <key>WorkingDirectory</key><string>$workdir</string>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>KeepAlive</key>$keepalive
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>$LAB_DATA/logs/$role.log</string>
-  <key>StandardErrorPath</key><string>$LAB_DATA/logs/$role.log</string>
+  <key>StandardOutPath</key><string>$log</string>
+  <key>StandardErrorPath</key><string>$log</string>
   <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>$PATH</string>
+    <key>PATH</key><string>$path</string>
     <key>HOME</key><string>$HOME</string>
     <key>JAVA_HOME</key><string>$JAVA_HOME</string>
 PLIST
-      grep -v '^\s*#' "$envfile" | grep '=' | grep -v '^JAVA_HOME=' | while IFS='=' read -r key value; do
-        value="${value%\"}"; value="${value#\"}"
-        printf '    <key>%s</key><string>%s</string>\n' "$key" "$value"
-      done
-      echo '  </dict>'
-      echo '</dict></plist>'
-    } > "/tmp/$label.plist"
-    sudo launchctl bootout system "$plist" 2>/dev/null || true
-    sudo install -m 644 -o root -g wheel "/tmp/$label.plist" "$plist"
-    sudo launchctl bootstrap system "$plist"
+  settings | while IFS='=' read -r key value; do
+    printf '    <key>%s</key><string>%s</string>\n' "$key" "$(xml "$value")"
   done
-  echo "keep the machine awake for queued work: sudo pmset -a sleep 0 disksleep 0"
+  echo '  </dict>'
+  echo '</dict></plist>'
+}
+
+case "$os" in
+Darwin)
+  stage="$(mktemp -d)"
+  roles=(api runner)
+  [[ "$docker_mode" == colima ]] && roles=(colima api runner)
+  for role in "${roles[@]}"; do
+    label="com.eignex.klause-lab.$role"
+    case "$role" in
+    colima) plist "$label" '<true/>' "$HOME" "$LAB_DATA/logs/colima.log" "$(PATH="$path" command -v colima)" start -f ;;
+    # caffeinate holds the machine awake for as long as the runner lives, whatever the energy settings say.
+    runner) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/runner.log" \
+      /usr/bin/caffeinate -i "$bin" runner ;;
+    api) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/api.log" "$bin" api ;;
+    esac > "$stage/$label.plist"
+    plutil -lint -s "$stage/$label.plist"
+  done
+  [[ -n "$dry" ]] && { echo "dry run: service files in $stage"; exit 0; }
+  # Login agents under the same labels, or brew's own colima agent, would run a second copy once someone logs in.
+  for agent in "$HOME"/Library/LaunchAgents/com.eignex.klause-lab.*.plist "$HOME/Library/LaunchAgents/sh.brew.colima.plist"; do
+    [[ -f "$agent" ]] || continue
+    launchctl bootout "gui/$(id -u)" "$agent" 2>/dev/null || true
+    mv "$agent" "$agent.disabled"
+    echo "disabled login agent $agent"
+  done
+  for role in "${roles[@]}"; do
+    label="com.eignex.klause-lab.$role"
+    sudo launchctl bootout "system/$label" 2>/dev/null || true
+    sudo install -m 644 -o root -g wheel "$stage/$label.plist" "/Library/LaunchDaemons/$label.plist"
+    sudo launchctl bootstrap system "/Library/LaunchDaemons/$label.plist"
+  done
+  rm -rf "$stage"
+  sudo pmset -a sleep 0 disksleep 0
   ;;
 Linux)
   units="$HOME/.config/systemd/user"
+  [[ -n "$dry" ]] && units="$(mktemp -d)"
   mkdir -p "$units"
   for role in api runner; do
-    cat > "$units/klause-lab-$role.service" <<UNIT
+    {
+      cat <<UNIT
 [Unit]
 Description=klause lab $role
 After=network-online.target
 
 [Service]
-EnvironmentFile=$envfile
-Environment=PATH=$PATH
+Environment=PATH=$path
 Environment=JAVA_HOME=$JAVA_HOME
+UNIT
+      settings | while IFS= read -r line; do echo "Environment=\"$line\""; done
+      cat <<UNIT
 WorkingDirectory=$LAB_DATA
 ExecStart=$bin $role
 Restart=on-failure
 RestartSec=30
-# The host check exits 78 on a machine without BLAS; retrying cannot fix that.
+# The host check exits 78 on a machine without SIMD; retrying cannot fix that.
 RestartPreventExitStatus=78
 StandardOutput=append:$LAB_DATA/logs/$role.log
 StandardError=append:$LAB_DATA/logs/$role.log
@@ -88,11 +168,13 @@ StandardError=append:$LAB_DATA/logs/$role.log
 [Install]
 WantedBy=default.target
 UNIT
+    } > "$units/klause-lab-$role.service"
   done
+  [[ -n "$dry" ]] && { echo "dry run: service files in $units"; exit 0; }
   systemctl --user daemon-reload
-  systemctl --user enable --now klause-lab-api klause-lab-runner
+  systemctl --user enable klause-lab-api klause-lab-runner
+  systemctl --user restart klause-lab-api klause-lab-runner
   loginctl enable-linger "$(id -un)"   # start at boot without a login session
   ;;
-*) echo "unsupported OS $(uname -s)"; exit 1 ;;
 esac
 echo "api on http://$(hostname):${LAB_PORT:-8420}/"

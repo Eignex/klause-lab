@@ -67,8 +67,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             if (job == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(job)
         }
         post("/jobs/{id}/cancel") {
-            val found = store.requestCancel(call.parameters["id"]!!.toLong())
-            call.respond(if (found) HttpStatusCode.Accepted else HttpStatusCode.NotFound, if (found) "cancel requested" else "no such job")
+            when (store.requestCancel(call.parameters["id"]!!.toLong())) {
+                CancelOutcome.CANCELLED -> call.respond(HttpStatusCode.OK, "cancelled before it started")
+                CancelOutcome.REQUESTED -> call.respond(HttpStatusCode.Accepted, "cancel requested")
+                CancelOutcome.FINISHED -> call.respond(HttpStatusCode.Conflict, "job already finished")
+                CancelOutcome.MISSING -> call.respond(HttpStatusCode.NotFound, "no such job")
+            }
         }
         get("/jobs/{id}/files") {
             val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile()
@@ -126,7 +130,7 @@ private fun page(jobs: List<Job>): String = buildString {
         append("<tr><td><a href=\"/jobs/${job.id}\">${job.id}</a></td><td>${esc(job.name)}</td>")
         append("<td><code>${esc(job.ref)}${job.sha?.let { " " + it.take(9) } ?: ""}</code></td>")
         append("<td class=\"${job.status}\">${job.status}${job.error?.let { "<br><small>${esc(it)}</small>" } ?: ""}</td>")
-        append("<td>${job.done}/${job.commands.size}</td>")
+        append("<td>${job.done}/${job.commands.size}${if (job.failed > 0) "<br><small>${job.failed} failed</small>" else ""}</td>")
         append("<td>")
         if (current != null) {
             append("<code>${esc(current.cmd.take(160))}</code><br>${duration(current.startedAt, null)} ")

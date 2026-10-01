@@ -2,17 +2,22 @@ package com.eignex.lab
 
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
+import kotlin.io.path.isSymbolicLink
 import kotlin.io.path.writeText
 
 /**
  * Works the queue one job at a time. Each job checks its ref out into a fresh worktree, builds klause-cli, and
  * runs its commands in order. Every step's outcome is committed to the store before the next starts, so a crash
  * or reboot resumes the job at its first unfinished command; a command cut off mid-run is rerun from scratch.
+ *
+ * Every process the runner starts leads its own session, so killing that process group reaches everything the
+ * command spawned, including children whose parent shell has already died.
  */
 class Runner(private val config: Config, private val store: Store) {
     @Volatile
@@ -23,6 +28,7 @@ class Runner(private val config: Config, private val store: Store) {
 
     fun loop() {
         config.dataDir.createDirectories()
+        if (config.requireDocker) awaitDocker()
         while (true) {
             val job = store.next()
             if (job == null) {
@@ -30,6 +36,7 @@ class Runner(private val config: Config, private val store: Store) {
                 continue
             }
             runCatching { work(job) }.onFailure { e ->
+                if (stopping) return
                 log(job.id, "job failed: ${e.message}")
                 store.cancelRemaining(job.id)
                 store.finish(job.id, Status.FAILED, e.message ?: e.toString())
@@ -39,7 +46,8 @@ class Runner(private val config: Config, private val store: Store) {
 
     private fun work(claimed: Job) {
         val dir = config.jobDir(claimed.id).createDirectories()
-        claimed.commands.filter { it.status == Status.RUNNING }.forEach { killOrphan(dir, it.index) }
+        killOrphan(dir.resolve("setup.pid"))
+        claimed.commands.filter { it.status == Status.RUNNING }.forEach { killOrphan(dir.resolve("${it.index}.pid")) }
         store.requeueInterrupted(claimed.id)
         var job = checkNotNull(store.job(claimed.id))
         if (!job.setupDone || !config.worktree(job.id).exists()) {
@@ -55,7 +63,9 @@ class Runner(private val config: Config, private val store: Store) {
             if (exit == CANCELLED_EXIT) return cancel(job.id)
             store.commandFinished(job.id, command.index, exit)
         }
-        store.finish(job.id, if (store.job(job.id)!!.commands.all { it.status == Status.DONE }) Status.DONE else Status.FAILED)
+        // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
+        // that could not run, so a sweep with a few refused instances does not read as a broken job.
+        store.finish(job.id, Status.DONE)
         removeWorktree(job.id)
         log(job.id, "job finished")
     }
@@ -72,10 +82,26 @@ class Runner(private val config: Config, private val store: Store) {
         removeWorktree(job.id)
         config.worktree(job.id).parent.createDirectories()
         sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(config.worktree(job.id).toString())} $sha")
+        linkShared(config.worktree(job.id))
         sh(log, config.worktree(job.id).toFile(),
             "./gradlew :klause-cli:installJvmDist --max-workers=${config.gradleWorkers} -q")
         dir.resolve("sha").writeAtomically(sha)
         return sha
+    }
+
+    /**
+     * Point each of [Config.sharedPaths] in the worktree at one directory every job uses. The bench result cache is
+     * the reason: reference results are keyed by instance, solver and budget alone, so a later job replays them
+     * instead of rerunning the reference, and klause results also key on the CLI binary each job builds afresh.
+     */
+    private fun linkShared(worktree: Path) {
+        for (relative in config.sharedPaths) {
+            val target = config.sharedDir.resolve(relative).createDirectories()
+            val link = worktree.resolve(relative)
+            link.parent.createDirectories()
+            if (Files.exists(link, LinkOption.NOFOLLOW_LINKS)) deleteTree(link)
+            Files.createSymbolicLink(link, target)
+        }
     }
 
     /**
@@ -85,7 +111,7 @@ class Runner(private val config: Config, private val store: Store) {
      */
     private fun run(job: Job, command: Command, dir: Path): Int {
         val work = config.worktree(job.id).toFile()
-        val builder = ProcessBuilder("bash", "-c", command.cmd)
+        val builder = ProcessBuilder(inSession("bash", "-c", command.cmd))
             .directory(work)
             .redirectOutput(dir.resolve("${command.index}.out").toFile())
             .redirectError(dir.resolve("${command.index}.err").toFile())
@@ -103,10 +129,7 @@ class Runner(private val config: Config, private val store: Store) {
             if (config.javaHome.isNotBlank()) put("JAVA_HOME", config.javaHome)
         }
         log(job.id, "command ${command.index}: ${command.cmd}")
-        val process = builder.start()
-        current = process
-        val handle = process.toHandle()
-        dir.resolve("${command.index}.pid").writeAtomically("${handle.pid()} ${handle.info().startInstant().map { it.toEpochMilli() }.orElse(0)}")
+        val process = start(builder, dir.resolve("${command.index}.pid"))
         try {
             return await(job, command, dir, process)
         } finally {
@@ -123,7 +146,7 @@ class Runner(private val config: Config, private val store: Store) {
             }
             if (now() > deadline) {
                 killTree(process)
-                dir.resolve("${command.index}.exit").writeAtomically("timeout")
+                dir.resolve("${command.index}.exit").writeAtomically("timeout\n")
                 return TIMEOUT_EXIT
             }
         }
@@ -131,26 +154,49 @@ class Runner(private val config: Config, private val store: Store) {
         // rerun it, as it would after a crash; recording the kill would mark it failed and skip it.
         while (stopping) Thread.sleep(CANCEL_POLL_MS)
         val exit = process.exitValue()
-        dir.resolve("${command.index}.exit").writeAtomically(exit.toString())
+        dir.resolve("${command.index}.exit").writeAtomically("$exit\n")
         return exit
     }
 
+    /** Start a process that leads its own session, and record its pid and start time in [pidFile]. */
+    private fun start(builder: ProcessBuilder, pidFile: Path): Process {
+        val process = builder.start()
+        current = process
+        val handle = process.toHandle()
+        pidFile.writeAtomically("${handle.pid()} ${handle.info().startInstant().map { it.toEpochMilli() }.orElse(0)}\n")
+        return process
+    }
+
     /**
-     * A runner that died mid-command leaves that command's process tree running. Kill it before the command is
-     * rerun, or the rerun competes with it for the core. The recorded start time guards against a reused pid.
+     * A runner that died mid-step leaves that step's process group running. Kill it before the step reruns, or the
+     * rerun competes with it for the core. The group outlives its leader when the leader dies first, so a dead
+     * leader still means the group is killed; a live process under that pid with another start time is a reused
+     * pid, and its group is left alone.
      */
-    private fun killOrphan(dir: Path, index: Int) {
-        val file = dir.resolve("$index.pid")
-        if (!file.exists()) return
-        val (pid, started) = file.toFile().readText().trim().split(" ").map { it.toLong() }
-        ProcessHandle.of(pid).filter { handle ->
-            handle.info().startInstant().map { it.toEpochMilli() == started }.orElse(false)
-        }.ifPresent { handle ->
-            println("killing orphaned process tree $pid of command $index")
-            handle.descendants().forEach { it.destroyForcibly() }
-            handle.destroyForcibly()
-            handle.onExit().get(KILL_WAIT_SEC, TimeUnit.SECONDS)
+    private fun killOrphan(pidFile: Path) {
+        if (!pidFile.exists()) return
+        val (pid, started) = pidFile.toFile().readText().trim().split(" ").map { it.toLong() }
+        val leader = ProcessHandle.of(pid)
+        val reused = leader.map { handle ->
+            handle.info().startInstant().map { it.toEpochMilli() != started }.orElse(true)
+        }.orElse(false)
+        if (reused) return
+        println("killing orphaned process group $pid from ${pidFile.fileName}")
+        killGroup(pid)
+        leader.ifPresent { it.onExit().get(KILL_WAIT_SEC, TimeUnit.SECONDS) }
+    }
+
+    /** Wait until Docker answers before taking work, since reference commands need it and it starts after boot. */
+    private fun awaitDocker() {
+        var waited = 0L
+        while (ProcessBuilder("docker", "info").redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD).start().waitFor() != 0
+        ) {
+            if (waited % DOCKER_LOG_EVERY_MS == 0L) println("waiting for docker (${waited / 1000} s)")
+            Thread.sleep(DOCKER_POLL_MS)
+            waited += DOCKER_POLL_MS
         }
+        println("docker is up")
     }
 
     /** Kill the running command's tree when the service manager stops the runner. */
@@ -172,20 +218,31 @@ class Runner(private val config: Config, private val store: Store) {
 
     private fun removeWorktree(jobId: Long) {
         val path = config.worktree(jobId)
+        // Unlink the shared directories first, so that nothing below can reach the data they point at.
+        for (relative in config.sharedPaths) {
+            val link = path.resolve(relative)
+            if (link.isSymbolicLink()) Files.delete(link)
+        }
         if (config.mirror.exists()) {
             runCatching { capture(config.mirror.toFile(), "git worktree remove --force ${quote(path.toString())}") }
             runCatching { capture(config.mirror.toFile(), "git worktree prune") }
         }
-        if (path.exists()) path.toFile().deleteRecursively()
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) deleteTree(path)
     }
 
     private fun sh(log: File, dir: File, cmd: String) {
         log.appendText("$ $cmd\n")
-        val builder = ProcessBuilder("bash", "-c", cmd).directory(dir)
+        val builder = ProcessBuilder(inSession("bash", "-c", cmd)).directory(dir)
             .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log))
         if (config.javaHome.isNotBlank()) builder.environment()["JAVA_HOME"] = config.javaHome
-        val process = builder.start()
-        if (!process.waitFor(config.setupTimeoutSec, TimeUnit.SECONDS)) {
+        val process = start(builder, log.toPath().resolveSibling("setup.pid"))
+        val finished = try {
+            process.waitFor(config.setupTimeoutSec, TimeUnit.SECONDS)
+        } finally {
+            current = null
+        }
+        while (stopping) Thread.sleep(CANCEL_POLL_MS)
+        if (!finished) {
             killTree(process)
             error("setup step timed out: $cmd")
         }
@@ -200,6 +257,7 @@ class Runner(private val config: Config, private val store: Store) {
     }
 
     private fun killTree(process: Process) {
+        killGroup(process.pid())
         process.descendants().forEach { it.destroyForcibly() }
         process.destroyForcibly()
         process.waitFor(KILL_WAIT_SEC, TimeUnit.SECONDS)
@@ -216,7 +274,32 @@ class Runner(private val config: Config, private val store: Store) {
         const val KILL_WAIT_SEC = 10L
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001
+        const val DOCKER_POLL_MS = 5000L
+        const val DOCKER_LOG_EVERY_MS = 60_000L
     }
+}
+
+/**
+ * [command] wrapped so that it leads a new session, and so its own process group. perl is the portable way to
+ * get there: macOS ships no `setsid` command, and both macOS and every common Linux base image ship perl.
+ */
+internal fun inSession(vararg command: String): List<String> =
+    listOf("perl", "-e", "use POSIX qw(setsid); setsid() or die \"setsid: \$!\"; exec @ARGV or die \"exec: \$!\"") +
+        command
+
+/** SIGKILL every process in the group that [leader] leads. */
+internal fun killGroup(leader: Long) {
+    ProcessBuilder("kill", "-KILL", "--", "-$leader").redirectErrorStream(true)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD).start().waitFor()
+}
+
+/** Delete [root] and everything under it without following symbolic links, which are removed as links. */
+internal fun deleteTree(root: Path) {
+    if (root.isSymbolicLink() || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+        Files.deleteIfExists(root)
+        return
+    }
+    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
 }
 
 internal fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"

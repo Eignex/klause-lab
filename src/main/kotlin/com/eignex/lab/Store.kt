@@ -37,7 +37,10 @@ data class Job(
     val commands: List<Command> = emptyList(),
 ) {
     val done: Int get() = commands.count { it.status == Status.DONE || it.status == Status.FAILED }
+    val failed: Int get() = commands.count { it.status == Status.FAILED }
 }
+
+enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
 
 /**
  * The job queue, persisted in SQLite so that neither a crashed runner nor a reboot loses queued or finished work.
@@ -165,19 +168,22 @@ class Store(file: Path) {
     )
 
     @Synchronized
-    fun requestCancel(jobId: Long): Boolean = transaction {
-        val job = job(jobId) ?: return@transaction false
+    fun requestCancel(jobId: Long): CancelOutcome = transaction {
+        val job = job(jobId) ?: return@transaction CancelOutcome.MISSING
         when (job.status) {
             Status.QUEUED -> {
                 update("UPDATE jobs SET status = ?, cancel_requested = 1, finished_at = ? WHERE id = ?",
                     Status.CANCELLED.name, now(), jobId)
                 update("UPDATE commands SET status = ? WHERE job_id = ? AND status = ?",
                     Status.CANCELLED.name, jobId, Status.QUEUED.name)
+                CancelOutcome.CANCELLED
             }
-            Status.RUNNING -> update("UPDATE jobs SET cancel_requested = 1 WHERE id = ?", jobId)
-            else -> Unit
+            Status.RUNNING -> {
+                update("UPDATE jobs SET cancel_requested = 1 WHERE id = ?", jobId)
+                CancelOutcome.REQUESTED
+            }
+            else -> CancelOutcome.FINISHED
         }
-        true
     }
 
     @Synchronized

@@ -8,7 +8,7 @@ data class Config(
     /** Queue database, per-job outputs and worktrees live here. */
     val dataDir: Path = Path(env("LAB_DATA", "${System.getProperty("user.home")}/klause-lab-data")),
     /** The klause repository to fetch refs from. */
-    val repoUrl: String = env("LAB_REPO", "git@github.com:Eignex/klause.git"),
+    val repoUrl: String = env("LAB_REPO", "https://github.com/Eignex/klause.git"),
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
     val corpusDir: Path = Path(env("LAB_CORPUS", "${System.getProperty("user.home")}/.cache/klause-bench/corpus")),
     val port: Int = env("LAB_PORT", "8420").toInt(),
@@ -19,7 +19,19 @@ data class Config(
     val gradleWorkers: Int = env("LAB_GRADLE_WORKERS", "2").toInt(),
     val defaultTimeoutSec: Long = env("LAB_DEFAULT_TIMEOUT_SEC", "21600").toLong(),
     val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
+    /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
+    val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
+    /** Worktree-relative directories every job shares, separated by `:`. */
+    val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "klause-bench/build/bench-cache")
+        .split(':').map { it.trim() }.filter { it.isNotEmpty() },
 ) {
+    init {
+        require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
+            "LAB_SHARED_PATHS entries must stay inside the worktree: $sharedPaths"
+        }
+    }
+
+    val sharedDir: Path get() = dataDir.resolve("shared")
     val database: Path get() = dataDir.resolve("lab.db")
     val mirror: Path get() = dataDir.resolve("repo.git")
     fun jobDir(id: Long): Path = dataDir.resolve("jobs").resolve(id.toString())
