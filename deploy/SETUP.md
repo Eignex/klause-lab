@@ -43,6 +43,12 @@ after the job ends. The worktree is deleted. A failing command does not stop the
 ends DONE, and the failures are counted on it. FAILED means the job itself could not run, such as a failed checkout
 or build.
 
+A job runs one command at a time unless it asks for more: `deploy/lab submit <name> <ref> <file> <timeout>
+<parallel>` runs up to `parallel` of its commands at once, in index order, capped by `LAB_MAX_PARALLEL` (default
+4). `deploy/lab parallel <id> <n>` changes it while the job runs: raising it starts more commands at once, lowering
+it starts no more until fewer than `n` run, and never stops a running one. Setup always runs alone. Each solve holds
+its own heap (`-Xmx4g` by default), so keep `parallel` times that within the machine's memory.
+
 `LAB_SHARED_PATHS` names worktree directories every job shares, by default `klause-bench/build/bench-cache`. Bench
 keys a reference result by instance, solver and budget alone, so a later job replays it instead of rerunning the
 solver; a klause result also keys on the CLI binary, which each job builds afresh, so it is never replayed into

@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import java.nio.file.Files
+import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
@@ -71,5 +72,36 @@ class StoreTest {
         store.finish(id, Status.DONE)
 
         assertEquals(CancelOutcome.FINISHED, store.requestCancel(id))
+    }
+
+    @Test
+    fun `a running job's parallel limit can be changed`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L), parallel = 2)
+        store.next()
+
+        store.setParallel(id, 4)
+
+        assertEquals(4, store.parallel(id))
+    }
+
+    @Test
+    fun `a database from before the parallel column runs its jobs serially`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        DriverManager.getConnection("jdbc:sqlite:$file").use { old ->
+            old.createStatement().use {
+                it.execute(
+                    """CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL,
+                        sha TEXT, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0,
+                        setup_done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, started_at INTEGER,
+                        finished_at INTEGER, error TEXT)""",
+                )
+                it.execute("INSERT INTO jobs (name, ref, status, created_at) VALUES ('old', 'main', 'QUEUED', 0)")
+            }
+        }
+
+        val job = Store(file).jobs().single()
+
+        assertEquals(1, job.parallel)
     }
 }

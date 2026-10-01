@@ -34,6 +34,8 @@ data class Job(
     val startedAt: Long? = null,
     val finishedAt: Long? = null,
     val error: String? = null,
+    /** How many of the job's commands may run at once. The runner rereads it, so it can change mid-job. */
+    val parallel: Int = 1,
     val commands: List<Command> = emptyList(),
 ) {
     val done: Int get() = commands.count { it.status == Status.DONE || it.status == Status.FAILED }
@@ -70,19 +72,25 @@ class Store(file: Path) {
                     status TEXT NOT NULL, exit_code INTEGER, started_at INTEGER, finished_at INTEGER,
                     PRIMARY KEY (job_id, idx))""",
             )
+            // A database created before the column existed gains it here; every older job ran serially.
+            val columns = it.executeQuery("PRAGMA table_info(jobs)").use { rows ->
+                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
+            }
+            if ("parallel" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN parallel INTEGER NOT NULL DEFAULT 1")
         }
     }
 
     @Synchronized
-    fun create(name: String, ref: String, commands: List<Pair<String, Long>>): Long = transaction {
+    fun create(name: String, ref: String, commands: List<Pair<String, Long>>, parallel: Int = 1): Long = transaction {
         val id = connection.prepareStatement(
-            "INSERT INTO jobs (name, ref, status, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO jobs (name, ref, status, created_at, parallel) VALUES (?, ?, ?, ?, ?)",
             java.sql.Statement.RETURN_GENERATED_KEYS,
         ).use {
             it.setString(1, name)
             it.setString(2, ref)
             it.setString(3, Status.QUEUED.name)
             it.setLong(4, now())
+            it.setInt(5, parallel)
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
@@ -186,6 +194,17 @@ class Store(file: Path) {
         }
     }
 
+    /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
+    @Synchronized
+    fun setParallel(jobId: Long, parallel: Int): Boolean =
+        update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
+
+    @Synchronized
+    fun parallel(jobId: Long): Int = connection.prepareStatement("SELECT parallel FROM jobs WHERE id = ?").use {
+        it.setLong(1, jobId)
+        it.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else 1 }
+    }
+
     @Synchronized
     fun cancelRequested(jobId: Long): Boolean = connection.prepareStatement(
         "SELECT cancel_requested FROM jobs WHERE id = ?",
@@ -223,7 +242,7 @@ class Store(file: Path) {
         rows.getLong("id"), rows.getString("name"), rows.getString("ref"), rows.getString("sha"),
         Status.valueOf(rows.getString("status")), rows.getInt("cancel_requested") == 1, rows.getInt("setup_done") == 1,
         rows.getLong("created_at"), rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
-        rows.getString("error"),
+        rows.getString("error"), rows.getInt("parallel"),
     )
 
     private fun update(sql: String, vararg values: Any?) = connection.prepareStatement(sql).use { statement ->

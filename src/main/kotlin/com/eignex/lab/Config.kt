@@ -19,6 +19,8 @@ data class Config(
     val gradleWorkers: Int = env("LAB_GRADLE_WORKERS", "2").toInt(),
     val defaultTimeoutSec: Long = env("LAB_DEFAULT_TIMEOUT_SEC", "21600").toLong(),
     val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
+    /** The most commands one job may run at once, whatever it asks for. Each solve holds its own heap. */
+    val maxParallel: Int = env("LAB_MAX_PARALLEL", "4").toInt(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
     val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
     /** Worktree-relative directories every job shares, separated by `:`. */

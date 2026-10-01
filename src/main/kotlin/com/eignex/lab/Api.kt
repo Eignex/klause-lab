@@ -27,7 +27,10 @@ import java.time.format.DateTimeFormatter
 data class CommandSpec(val cmd: String, val timeoutSec: Long? = null)
 
 @Serializable
-data class JobSpec(val name: String, val ref: String, val commands: List<CommandSpec>)
+data class JobSpec(val name: String, val ref: String, val commands: List<CommandSpec>, val parallel: Int = 1)
+
+@Serializable
+data class ParallelSpec(val parallel: Int)
 
 @Serializable
 data class Created(val id: Long)
@@ -59,7 +62,13 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             require(spec.name.isNotBlank()) { "name is required" }
             require(spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "ref is required" }
             require(spec.commands.isNotEmpty()) { "at least one command is required" }
-            val id = store.create(spec.name, spec.ref, spec.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) })
+            requireParallel(spec.parallel, config)
+            val id = store.create(
+                spec.name,
+                spec.ref,
+                spec.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) },
+                spec.parallel,
+            )
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/jobs/{id}") {
@@ -73,6 +82,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 CancelOutcome.FINISHED -> call.respond(HttpStatusCode.Conflict, "job already finished")
                 CancelOutcome.MISSING -> call.respond(HttpStatusCode.NotFound, "no such job")
             }
+        }
+        post("/jobs/{id}/parallel") {
+            val spec = call.receive<ParallelSpec>()
+            requireParallel(spec.parallel, config)
+            val found = store.setParallel(call.parameters["id"]!!.toLong(), spec.parallel)
+            call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "parallel ${spec.parallel}" else "no such job")
         }
         get("/jobs/{id}/files") {
             val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile()
@@ -92,6 +107,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
     }
 }
+
+private fun requireParallel(parallel: Int, config: Config) =
+    require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }
 
 /** The last [bytes] of a file that may still be growing. */
 private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").use { raf ->
@@ -130,7 +148,7 @@ private fun page(jobs: List<Job>): String = buildString {
         append("<tr><td><a href=\"/jobs/${job.id}\">${job.id}</a></td><td>${esc(job.name)}</td>")
         append("<td><code>${esc(job.ref)}${job.sha?.let { " " + it.take(9) } ?: ""}</code></td>")
         append("<td class=\"${job.status}\">${job.status}${job.error?.let { "<br><small>${esc(it)}</small>" } ?: ""}</td>")
-        append("<td>${job.done}/${job.commands.size}${if (job.failed > 0) "<br><small>${job.failed} failed</small>" else ""}</td>")
+        append("<td>${job.done}/${job.commands.size}${if (job.parallel > 1) " ×${job.parallel}" else ""}${if (job.failed > 0) "<br><small>${job.failed} failed</small>" else ""}</td>")
         append("<td>")
         if (current != null) {
             append("<code>${esc(current.cmd.take(160))}</code><br>${duration(current.startedAt, null)} ")

@@ -5,6 +5,10 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -20,8 +24,8 @@ import kotlin.io.path.writeText
  * command spawned, including children whose parent shell has already died.
  */
 class Runner(private val config: Config, private val store: Store) {
-    @Volatile
-    private var current: Process? = null
+    /** Every process the runner has started and not yet seen exit, so cancel and shutdown can reach them all. */
+    private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
 
     @Volatile
     private var stopping = false
@@ -55,19 +59,56 @@ class Runner(private val config: Config, private val store: Store) {
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
-        for (command in job.commands) {
-            if (command.status != Status.QUEUED) continue
-            if (store.cancelRequested(job.id)) return cancel(job.id)
-            store.commandStarted(job.id, command.index)
-            val exit = run(job, command, dir)
-            if (exit == CANCELLED_EXIT) return cancel(job.id)
-            store.commandFinished(job.id, command.index, exit)
-        }
+        if (!dispatch(job, dir)) return cancel(job.id)
         // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
         // that could not run, so a sweep with a few refused instances does not read as a broken job.
         store.finish(job.id, Status.DONE)
         removeWorktree(job.id)
         log(job.id, "job finished")
+    }
+
+    /**
+     * Run [job]'s queued commands in index order, up to the job's `parallel` many at once, and record each result
+     * as it ends. The limit is reread from the store on every pass, so it can be raised or lowered while the job
+     * runs: raising it starts more commands at once, lowering it lets the running ones finish and starts no more
+     * until the count is below it. False when the job was cancelled.
+     */
+    private fun dispatch(job: Job, dir: Path): Boolean {
+        val pending = ArrayDeque(job.commands.filter { it.status == Status.QUEUED })
+        val active = LinkedHashMap<Int, Future<Int>>()
+        val pool = Executors.newCachedThreadPool()
+        var cancelled = false
+        try {
+            while (pending.isNotEmpty() || active.isNotEmpty()) {
+                // Shutdown kills the commands and leaves them RUNNING to rerun; nothing here may record them.
+                while (stopping) Thread.sleep(CANCEL_POLL_MS)
+                for (index in active.filterValues { it.isDone }.keys) {
+                    val exit = active.remove(index)!!.get()
+                    if (exit == CANCELLED_EXIT) cancelled = true else store.commandFinished(job.id, index, exit)
+                }
+                // Each running command sees the request and kills its own tree; the job ends once they have.
+                if (!cancelled && store.cancelRequested(job.id)) cancelled = true
+                if (cancelled) {
+                    if (active.isEmpty()) return false
+                } else {
+                    val limit = store.parallel(job.id).coerceIn(1, config.maxParallel)
+                    while (active.size < limit && pending.isNotEmpty()) {
+                        val command = pending.removeFirst()
+                        store.commandStarted(job.id, command.index)
+                        active[command.index] = pool.submit<Int> { run(job, command, dir) }
+                    }
+                }
+                Thread.sleep(DISPATCH_POLL_MS)
+            }
+            return true
+        } catch (e: ExecutionException) {
+            // One command's failure to run fails the job, which must not leave its siblings running past it.
+            running.forEach(::killTree)
+            throw e.cause ?: e
+        } finally {
+            pool.shutdown()
+            pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
+        }
     }
 
     /** Fetch the ref into the mirror, check it out detached into the job's worktree, and build klause-cli there. */
@@ -133,7 +174,7 @@ class Runner(private val config: Config, private val store: Store) {
         try {
             return await(job, command, dir, process)
         } finally {
-            current = null
+            running.remove(process)
         }
     }
 
@@ -161,7 +202,7 @@ class Runner(private val config: Config, private val store: Store) {
     /** Start a process that leads its own session, and record its pid and start time in [pidFile]. */
     private fun start(builder: ProcessBuilder, pidFile: Path): Process {
         val process = builder.start()
-        current = process
+        running.add(process)
         val handle = process.toHandle()
         pidFile.writeAtomically("${handle.pid()} ${handle.info().startInstant().map { it.toEpochMilli() }.orElse(0)}\n")
         return process
@@ -204,7 +245,7 @@ class Runner(private val config: Config, private val store: Store) {
         Runtime.getRuntime().addShutdownHook(
             Thread {
                 stopping = true
-                current?.let(::killTree)
+                running.forEach(::killTree)
             },
         )
     }
@@ -239,7 +280,7 @@ class Runner(private val config: Config, private val store: Store) {
         val finished = try {
             process.waitFor(config.setupTimeoutSec, TimeUnit.SECONDS)
         } finally {
-            current = null
+            running.remove(process)
         }
         while (stopping) Thread.sleep(CANCEL_POLL_MS)
         if (!finished) {
@@ -274,6 +315,7 @@ class Runner(private val config: Config, private val store: Store) {
         const val KILL_WAIT_SEC = 10L
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001
+        const val DISPATCH_POLL_MS = 100L
         const val DOCKER_POLL_MS = 5000L
         const val DOCKER_LOG_EVERY_MS = 60_000L
     }
