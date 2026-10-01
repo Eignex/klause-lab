@@ -23,6 +23,9 @@ data class Config(
     val maxParallel: Int = env("LAB_MAX_PARALLEL", "4").toInt(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
     val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
+    /** Worktree-relative paths copied into the job directory when a job ends, separated by `:`. */
+    val collectPaths: List<String> = env("LAB_COLLECT_PATHS", "klause-bench/output:klause-bench/reference")
+        .split(':').map { it.trim() }.filter { it.isNotEmpty() },
     /** Worktree-relative directories every job shares, separated by `:`. */
     val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "klause-bench/build/bench-cache")
         .split(':').map { it.trim() }.filter { it.isNotEmpty() },
@@ -30,6 +33,9 @@ data class Config(
     init {
         require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
             "LAB_SHARED_PATHS entries must stay inside the worktree: $sharedPaths"
+        }
+        require(collectPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
+            "LAB_COLLECT_PATHS entries must stay inside the worktree: $collectPaths"
         }
     }
 

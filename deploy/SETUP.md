@@ -39,7 +39,10 @@ Commands run with `bash -c`, with the job's worktree as the working directory, a
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
 Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`. Anything else a command writes into `JOB_DIR` is kept
-after the job ends. The worktree is deleted. A failing command does not stop the job: the rest still run, the job
+after the job ends. The worktree is deleted, but first `LAB_COLLECT_PATHS` is copied out of it into
+`JOB_DIR/collected/`, also when the job is cancelled. By default that is `klause-bench/output`, where bench writes
+its per-problem results, and `klause-bench/reference`, its reference tables with whatever a `bench reference` run
+added. Links inside them are skipped. A failing command does not stop the job: the rest still run, the job
 ends DONE, and the failures are counted on it. FAILED means the job itself could not run, such as a failed checkout
 or build.
 
@@ -89,6 +92,14 @@ deploy/lab submit docker-images main images.txt 3600
 
 Logs go to `$LAB_DATA/logs/{api,runner}.log`.
 
+## Updating
+
+`deploy/update.sh` on the server pulls this repository, builds it, and restarts the services on the new build. It
+needs no sudo. Each build is copied into its own `$LAB_DATA/releases/<sha>-<time>/`, the services run
+`releases/current`, and the three newest releases are kept. A rebuild never rewrites jars a running service still
+loads classes from, which would break it until it restarts. The command a job was running when the services
+restart is rerun. Rerun `install.sh` instead when `lab.env` or the service setup itself changed.
+
 ## Client
 
 `deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` to override the default server, `192.168.50.104`.
@@ -96,12 +107,11 @@ Logs go to `$LAB_DATA/logs/{api,runner}.log`.
 ```sh
 cat > sweep.txt <<'EOF'
 ./gradlew :klause-bench:bench --max-workers=1 --args="solve suite=mzn-bench per-family=1 max=50 seed=1"
-cp -r klause-bench/output "$JOB_DIR/"
 EOF
-deploy/lab submit leaf-lp fix/leaf-lp-slice-pause sweep.txt 21600   # optional per-command timeout, seconds
+deploy/lab submit mzn-sample main sweep.txt 21600   # optional per-command timeout, seconds; then parallel
 deploy/lab ls
 deploy/lab tail 7 0          # the last 8 kB of command 0's stdout; `err` for stderr
-deploy/lab fetch 7           # download jobs/7/ to ./lab-jobs/7 over HTTP
+deploy/lab fetch 7           # download jobs/7/ to ./lab-jobs/7 over HTTP; bench results under collected/
 deploy/lab cancel 7
 ```
 

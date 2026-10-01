@@ -60,6 +60,8 @@ class Runner(private val config: Config, private val store: Store) {
             job = checkNotNull(store.job(job.id))
         }
         if (!dispatch(job, dir)) return cancel(job.id)
+        // Collected before the job reads as done, so a client that sees DONE finds the results in place.
+        collect(job.id, dir)
         // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
         // that could not run, so a sweep with a few refused instances does not read as a broken job.
         store.finish(job.id, Status.DONE)
@@ -250,7 +252,23 @@ class Runner(private val config: Config, private val store: Store) {
         )
     }
 
+    /**
+     * Copy each of [Config.collectPaths] that the job's worktree holds into `collected/` under its job directory,
+     * since the worktree is deleted next. That is where bench writes its per-problem results and its updated
+     * reference tables, which a command would otherwise have to copy out itself.
+     */
+    private fun collect(jobId: Long, dir: Path) {
+        val worktree = config.worktree(jobId)
+        for (relative in config.collectPaths) {
+            val source = worktree.resolve(relative)
+            if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) continue
+            copyTree(source, dir.resolve(COLLECTED).resolve(relative))
+            log(jobId, "collected $relative")
+        }
+    }
+
     private fun cancel(jobId: Long) {
+        collect(jobId, config.jobDir(jobId))
         store.cancelRemaining(jobId)
         store.finish(jobId, Status.CANCELLED)
         removeWorktree(jobId)
@@ -316,6 +334,7 @@ class Runner(private val config: Config, private val store: Store) {
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001
         const val DISPATCH_POLL_MS = 100L
+        const val COLLECTED = "collected"
         const val DOCKER_POLL_MS = 5000L
         const val DOCKER_LOG_EVERY_MS = 60_000L
     }
@@ -333,6 +352,21 @@ internal fun inSession(vararg command: String): List<String> =
 internal fun killGroup(leader: Long) {
     ProcessBuilder("kill", "-KILL", "--", "-$leader").redirectErrorStream(true)
         .redirectOutput(ProcessBuilder.Redirect.DISCARD).start().waitFor()
+}
+
+/** Copy the tree at [source] to [target], replacing files already there. Links are not followed, nor copied. */
+internal fun copyTree(source: Path, target: Path) {
+    Files.walk(source).use { paths ->
+        paths.filter { !it.isSymbolicLink() }.forEach { path ->
+            val destination = target.resolve(source.relativize(path).toString())
+            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                destination.createDirectories()
+            } else {
+                destination.parent.createDirectories()
+                Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+    }
 }
 
 /** Delete [root] and everything under it without following symbolic links, which are removed as links. */

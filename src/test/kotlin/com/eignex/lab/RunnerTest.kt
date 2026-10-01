@@ -36,4 +36,19 @@ class RunnerTest {
         child.ifPresent { it.onExit().get(5, TimeUnit.SECONDS) }
         assertFalse(child.map { it.isAlive }.orElse(false))
     }
+
+    @Test
+    fun `collecting a tree copies its files and skips the links in it`() {
+        val root = Files.createTempDirectory("lab")
+        val source = root.resolve("output").resolve("config").createDirectories().parent
+        source.resolve("config").resolve("p.json").writeText("{}")
+        Files.createSymbolicLink(source.resolve("cache"), root.resolve("elsewhere").createDirectories())
+
+        copyTree(source, root.resolve("collected"))
+
+        assertTrue(
+            root.resolve("collected/config/p.json").exists() &&
+                !Files.exists(root.resolve("collected/cache"), java.nio.file.LinkOption.NOFOLLOW_LINKS),
+        )
+    }
 }

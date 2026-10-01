@@ -6,6 +6,7 @@
 set -euo pipefail
 dry="${LAB_INSTALL_DRY_RUN:-}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
+. "$here/deploy/release.sh"
 envfile="$HOME/.config/klause-lab/lab.env"
 if [[ ! -f "$envfile" ]]; then
   if [[ -n "$dry" ]]; then envfile="$here/deploy/lab.env.example"
@@ -53,17 +54,11 @@ echo "docker: $docker_mode"
 
 # Gradle itself needs a Java to launch; any 17+ on PATH does. The services run on the toolchain JDK.
 command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
-bin="$here/build/install/klause-lab/bin/klause-lab"
-# installDist rewrites the jars the running services load classes from, which breaks them until they restart,
-# so a dry run reuses the existing build; a real install restarts the services right after it rebuilds.
-if [[ -n "$dry" && -x "$bin" ]]; then
-  echo "dry run: reusing the existing build"
-else
-  (cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
-fi
+(cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
 JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 echo "services run on $JAVA_HOME"
+if [[ -n "$dry" ]]; then bin="$here/build/install/klause-lab/bin/klause-lab"; else bin="$(release "$here" "$LAB_DATA")"; fi
 "$bin" check   # fails here, before anything is registered, on a host without SIMD
 
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an
