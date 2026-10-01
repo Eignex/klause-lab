@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build klause-lab and register its services with the host's service manager: launchd daemons on macOS, which
 # start at boot without a login and run as this user, and systemd user units with lingering on Linux.
-# LAB_INSTALL_DRY_RUN=1 builds, checks and writes the service files to a temporary directory, and registers nothing.
+# LAB_INSTALL_DRY_RUN=1 checks and writes the service files to a temporary directory, and registers nothing; it
+# builds only when there is no build yet.
 set -euo pipefail
 dry="${LAB_INSTALL_DRY_RUN:-}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,11 +53,17 @@ echo "docker: $docker_mode"
 
 # Gradle itself needs a Java to launch; any 17+ on PATH does. The services run on the toolchain JDK.
 command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
-(cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
+bin="$here/build/install/klause-lab/bin/klause-lab"
+# installDist rewrites the jars the running services load classes from, which breaks them until they restart,
+# so a dry run reuses the existing build; a real install restarts the services right after it rebuilds.
+if [[ -n "$dry" && -x "$bin" ]]; then
+  echo "dry run: reusing the existing build"
+else
+  (cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
+fi
 JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 echo "services run on $JAVA_HOME"
-bin="$here/build/install/klause-lab/bin/klause-lab"
 "$bin" check   # fails here, before anything is registered, on a host without SIMD
 
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an

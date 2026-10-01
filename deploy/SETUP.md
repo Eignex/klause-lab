@@ -74,7 +74,8 @@ deploy/lab submit docker-images main images.txt 3600
    setting commented out at its default; rerun the script after changing it. The services get a fixed PATH
    (Homebrew's and the system directories on macOS, `~/.local/bin` and the system ones on Linux); `LAB_PATH` puts
    more in front. `LAB_INSTALL_DRY_RUN=1 deploy/install.sh` writes the service files to a temporary directory and
-   registers nothing. On macOS it asks for sudo, to install the launchd daemons and to set
+   registers nothing; it reuses the existing build, since rebuilding under running services breaks them until
+   they restart. On macOS it asks for sudo, to install the launchd daemons and to set
    `pmset -a sleep 0 disksleep 0`.
 4. Bench downloads each corpus collection the first time a job uses it. To copy the dev PC's instead (51 GB on the
    first run, incremental after that), run `deploy/lab corpus` there; it needs the SSH access from step 2.
