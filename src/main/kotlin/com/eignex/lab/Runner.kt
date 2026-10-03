@@ -33,7 +33,12 @@ class Runner(private val config: Config, private val store: Store) {
     fun loop() {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
+        val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
         while (true) {
+            if (!disk.allowsWork()) {
+                Thread.sleep(IDLE_POLL_MS)
+                continue
+            }
             val job = store.next()
             if (job == null) {
                 Thread.sleep(IDLE_POLL_MS)

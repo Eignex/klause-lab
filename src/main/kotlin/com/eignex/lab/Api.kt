@@ -39,7 +39,7 @@ data class Created(val id: Long)
 data class FileEntry(val path: String, val bytes: Long)
 
 @Serializable
-data class Health(val ok: Boolean, val queued: Int, val running: Int, val host: HostReport)
+data class Health(val ok: Boolean, val queued: Int, val running: Int, val freeBytes: Long, val host: HostReport)
 
 fun serveApi(config: Config, store: Store, host: HostReport) {
     embeddedServer(Netty, port = config.port) { api(config, store, host) }.start(wait = true)
@@ -54,7 +54,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/") { call.respondText(page(store.jobs()), ContentType.Text.Html) }
         get("/health") {
             val jobs = store.jobs()
-            call.respond(Health(true, jobs.count { it.status == Status.QUEUED }, jobs.count { it.status == Status.RUNNING }, host))
+            val queued = jobs.count { it.status == Status.QUEUED }
+            val running = jobs.count { it.status == Status.RUNNING }
+            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host))
         }
         get("/jobs") { call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: 200)) }
         post("/jobs") {

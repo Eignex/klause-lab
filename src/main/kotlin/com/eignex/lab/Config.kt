@@ -21,6 +21,8 @@ data class Config(
     val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
     /** The most commands one job may run at once, whatever it asks for. Each solve holds its own heap. */
     val maxParallel: Int = env("LAB_MAX_PARALLEL", "4").toInt(),
+    /** Free space the data directory's disk must have before the runner starts a job. */
+    val minFreeBytes: Long = env("LAB_MIN_FREE_GB", "10").toLong() * BYTES_PER_GB,
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
     val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
     /** Worktree-relative paths copied into the job directory when a job ends, separated by `:`. */
