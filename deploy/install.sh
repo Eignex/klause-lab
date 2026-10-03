@@ -133,9 +133,14 @@ Darwin)
     mv "$agent" "$agent.disabled"
     echo "disabled login agent $agent"
   done
+  # A colima started by hand would hold the VM the daemon is about to start.
+  [[ "$docker_mode" == colima ]] && PATH="$path" colima stop >/dev/null 2>&1 || true
   for role in "${roles[@]}"; do
     label="com.eignex.klause-lab.$role"
     sudo launchctl bootout "system/$label" 2>/dev/null || true
+    # bootout returns before the job is gone (colima waits for its VM), and bootstrapping the label while it is
+    # still loaded fails with "Input/output error".
+    for _ in $(seq 60); do sudo launchctl print "system/$label" >/dev/null 2>&1 || break; sleep 1; done
     sudo install -m 644 -o root -g wheel "$stage/$label.plist" "/Library/LaunchDaemons/$label.plist"
     sudo launchctl bootstrap system "/Library/LaunchDaemons/$label.plist"
   done
