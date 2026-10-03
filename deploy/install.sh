@@ -43,7 +43,8 @@ if [[ -z "$docker_mode" ]]; then
   else docker_mode=none
   fi
 fi
-service_env=()
+# The runner updates itself from this checkout between jobs (LAB_UPDATE_CHECK_SEC=0 turns that off).
+service_env=("LAB_SOURCE=$here")
 case "$docker_mode" in
 colima) service_env+=("DOCKER_HOST=unix://$HOME/.colima/default/docker.sock" "LAB_REQUIRE_DOCKER=true") ;;
 system) service_env+=("LAB_REQUIRE_DOCKER=true") ;;
@@ -63,7 +64,7 @@ if [[ -n "$dry" ]]; then bin="$here/build/install/klause-lab/bin/klause-lab"; el
 
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an
 # empty array is unbound under `set -u`, hence the guarded expansion.
-owned='JAVA_HOME|PATH|LAB_DOCKER|LAB_PATH'
+owned='JAVA_HOME|PATH|LAB_DOCKER|LAB_PATH|LAB_SOURCE'
 [[ "$docker_mode" == colima ]] && owned="$owned|DOCKER_HOST|LAB_REQUIRE_DOCKER"
 [[ "$docker_mode" == system ]] && owned="$owned|LAB_REQUIRE_DOCKER"
 settings() {

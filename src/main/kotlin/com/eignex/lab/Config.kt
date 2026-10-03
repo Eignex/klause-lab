@@ -21,6 +21,10 @@ data class Config(
     val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
     /** The most commands one job may run at once, whatever it asks for. Each solve holds its own heap. */
     val maxParallel: Int = env("LAB_MAX_PARALLEL", "4").toInt(),
+    /** The klause-lab checkout the services were installed from; the runner updates from it between jobs. */
+    val sourceDir: Path? = System.getenv("LAB_SOURCE")?.takeIf { it.isNotBlank() }?.let { Path(it) },
+    /** Seconds between update checks; `0` turns self-update off. */
+    val updateCheckSec: Long = env("LAB_UPDATE_CHECK_SEC", "300").toLong(),
     /** Free space the data directory's disk must have before the runner starts a job. */
     val minFreeBytes: Long = env("LAB_MIN_FREE_GB", "10").toLong() * BYTES_PER_GB,
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */

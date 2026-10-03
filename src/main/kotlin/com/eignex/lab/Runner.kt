@@ -34,7 +34,14 @@ class Runner(private val config: Config, private val store: Store) {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
+        val updater = SelfUpdater(
+            config.sourceDir.takeIf { config.updateCheckSec > 0 },
+            config.updateCheckSec * 1000,
+            config.dataDir.resolve("logs").resolve("update.log").toFile(),
+        )
         while (true) {
+            // Only between jobs: an update restarts the runner, which would cut a command off mid-run.
+            updater.maybeUpdate()
             if (!disk.allowsWork()) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue

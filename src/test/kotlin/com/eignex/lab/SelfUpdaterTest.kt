@@ -1,0 +1,55 @@
+package com.eignex.lab
+
+import java.io.File
+import java.nio.file.Files
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class SelfUpdaterTest {
+    private class FakeGit(private val head: String, private val upstream: String) {
+        val calls = mutableListOf<List<String>>()
+
+        fun exec(@Suppress("UNUSED_PARAMETER") dir: File, cmd: List<String>, log: File?): Pair<Int, String> {
+            calls += cmd
+            return when (cmd.last()) {
+                "HEAD" -> 0 to head
+                "@{u}" -> 0 to upstream
+                else -> 0 to ""
+            }
+        }
+    }
+
+    private fun updater(git: FakeGit, now: () -> Long = { 0L }) =
+        SelfUpdater(Files.createTempDirectory("src"), 300_000, File.createTempFile("update", ".log"), now, git::exec)
+
+    @Test
+    fun `a checkout behind its upstream runs the update script`() {
+        val git = FakeGit(head = "aaa", upstream = "bbb")
+
+        updater(git).maybeUpdate()
+
+        assertEquals(listOf("bash", "deploy/update.sh"), git.calls.last())
+    }
+
+    @Test
+    fun `a checkout at its upstream does not update`() {
+        val git = FakeGit(head = "aaa", upstream = "aaa")
+
+        updater(git).maybeUpdate()
+
+        assertEquals(0, git.calls.count { it.first() == "bash" })
+    }
+
+    @Test
+    fun `checks closer together than the interval fetch once`() {
+        val git = FakeGit(head = "aaa", upstream = "aaa")
+        var now = 0L
+        val updater = updater(git) { now }
+
+        updater.maybeUpdate()
+        now = 1_000L
+        updater.maybeUpdate()
+
+        assertEquals(1, git.calls.count { it.contains("fetch") })
+    }
+}

@@ -100,6 +100,11 @@ needs no sudo. Each build is copied into its own `$LAB_DATA/releases/<sha>-<time
 loads classes from, which would break it until it restarts. The command a job was running when the services
 restart is rerun. Rerun `install.sh` instead when `lab.env` or the service setup itself changed.
 
+The runner does this on its own: between jobs, at most every `LAB_UPDATE_CHECK_SEC` (default 300), it fetches the
+checkout `install.sh` ran from and, when its branch's upstream is ahead, runs `update.sh`. A failed build or host
+check leaves the running release in place, with the output in `$LAB_DATA/logs/update.log`. `LAB_UPDATE_CHECK_SEC=0`
+turns it off.
+
 ## Client
 
 `deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` to override the default server, `192.168.50.104`.
