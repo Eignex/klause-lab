@@ -192,8 +192,13 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             }
         }
         post("/jobs/{id}/cancel") {
-            when (store.requestCancel(call.parameters["id"]!!.toLong())) {
-                CancelOutcome.CANCELLED -> call.respond(HttpStatusCode.OK, "cancelled before it started")
+            val id = call.parameters["id"]!!.toLong()
+            when (store.requestCancel(id)) {
+                // A queued job may have been set up before it yielded; the runner will not take it again to clean up.
+                CancelOutcome.CANCELLED -> {
+                    worktrees(config, id).forEach { deleteTree(it.toPath()) }
+                    call.respond(HttpStatusCode.OK, "cancelled before it ran again")
+                }
                 CancelOutcome.REQUESTED -> call.respond(HttpStatusCode.Accepted, "cancel requested")
                 CancelOutcome.FINISHED -> call.respond(HttpStatusCode.Conflict, "job already finished")
                 CancelOutcome.MISSING -> call.respond(HttpStatusCode.NotFound, "no such job")
@@ -205,9 +210,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             if (!store.deleteJob(id)) {
                 call.respond(HttpStatusCode.Conflict, "no such job, or it has not ended")
             } else {
-                val work = config.worktree(id).toFile()
-                (work.parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList() + config.jobDir(id).toFile())
-                    .forEach { deleteTree(it.toPath()) }
+                (worktrees(config, id) + config.jobDir(id).toFile()).forEach { deleteTree(it.toPath()) }
                 call.respond(HttpStatusCode.OK, "deleted")
             }
         }
@@ -282,6 +285,10 @@ private const val WAIT_POLL_MS = 2000L
 private const val MIN_SCHEDULE_SEC = 60L
 private const val PAGE_SIZE = 200
 private const val MAX_COMPARED = 6
+
+/** The worktrees job [id] built, its own and those of its other commits; the mirror forgets them at its next prune. */
+private fun worktrees(config: Config, id: Long): List<File> =
+    config.worktree(id).toFile().parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList()
 
 /** The latest finished experiment queued by the same schedule before [job], whose name is `<schedule>@<sha>`. */
 private fun previousRun(store: Store, job: Job): Long? =
