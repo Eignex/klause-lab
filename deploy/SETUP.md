@@ -73,6 +73,23 @@ job collected (each directory directly under its `collected/klause-bench/output/
 only) into a finished experiment with one arm per directory. Bench records carry no suite, so imported problems are
 named by problem alone.
 
+## Reference results
+
+The lab keeps reference solvers' verdicts on problems in its own database, one row per (collection, problem,
+solver), and an experiment's page compares each arm against them: problems both solved, solved by only one side,
+proven optima reached, objectives that beat the reference's best, and the mean gap where the arm is worse. The
+reference ran under its own budget, so this compares verdicts, not speed. Contradictions are listed as
+disagreements, which makes the reference a soundness check: an arm proving infeasible what the reference solved, or
+beating a proven reference optimum.
+
+`lab references import [ref]` loads the bench's tables (`klause-bench/reference/*.csv` at `ref`, default `main`) from
+the runner's mirror; a row already stored is replaced only by a stronger one (decided over undecided, proven over
+unproven, then the better objective), so imports never lose a result. `lab references <text>` searches them. The
+Reference tab shows what they cover and runs the import.
+
+The lab has three tabs: Queue (experiments, their pages and comparisons), Regression (a schedule's trend) and
+Reference.
+
 An experiment whose cases could take more than `LAB_MAX_EXPERIMENT_HOURS` (default 24), each using its whole budget,
 fails at planning with the count and the estimate; resubmit with `"confirm": true` to run it. Priorities, pause,
 `parallel` and cancel act between cases (see Client).
@@ -223,6 +240,10 @@ pages and files. The live parts refresh in place every 10 s, while a job is unfi
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
 | `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
 | `POST` | `/jobs/{id}/import` | an ended job's collected bench records as a new, finished experiment → `{"id"}` |
+| `GET` | `/trend[?name=<schedule>]` | a schedule's runs over its commits; the first schedule without a name |
+| `GET` | `/references[?q=<text>]` | reference coverage, or the results matching text |
+| `POST` | `/references/import[?ref=<ref>]` | load the bench's reference tables at ref → `{"sha", "read", "changed"}` |
+| `GET` | `/experiments/{id}/reference` | each arm against the reference, with disagreements |
 | `GET` | `/health` | queue counts and the koblas report |
 
 A browser (`Accept: text/html`) gets a page for `/jobs/{id}` and `/jobs/{id}/files`; `?json` gets the data instead.

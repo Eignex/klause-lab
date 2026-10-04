@@ -47,6 +47,12 @@ data class ScheduleSpec(
 data class Created(val id: Long)
 
 @Serializable
+data class ReferenceImport(val sha: String, val read: Int, val changed: Int)
+
+@Serializable
+data class ReferenceHit(val collection: String, val problem: String, val reference: Reference)
+
+@Serializable
 data class FileEntry(val path: String, val bytes: Long)
 
 @Serializable
@@ -92,9 +98,43 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
-            val name = requireNotNull(call.parameters["name"]?.takeIf { it.isNotBlank() }) { "name=<schedule> is required" }
-            val runs = Trend.runs(store, name)
-            if (call.wantsHtml()) call.respondText(trendPage(name, runs, config.repoUrl), ContentType.Text.Html) else call.respond(runs)
+            val schedules = store.schedules().filter { it.experiment != null }.map { it.name }
+            val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()
+            val runs = name?.let { Trend.runs(store, it) }.orEmpty()
+            if (call.wantsHtml()) {
+                call.respondText(trendPage(name, runs, config.repoUrl, schedules), ContentType.Text.Html)
+            } else {
+                call.respond(runs)
+            }
+        }
+        get("/references") {
+            val search = call.parameters["q"]?.takeIf { it.isNotBlank() }
+            val found = search?.let { store.searchReferences(it, SEARCH_LIMIT) }.orEmpty()
+            if (call.wantsHtml()) {
+                val page = referencesPage(store.referenceCoverage(), store.lastReferenceImport(), search, found, config.repoUrl)
+                call.respondText(page, ContentType.Text.Html)
+            } else {
+                call.respond(if (search != null) found.map { (key, r) -> ReferenceHit(key.first, key.second, r) } else emptyList())
+            }
+        }
+        // Reads the bench's reference tables at [ref] out of the runner's mirror, keeping any stronger result already here.
+        post("/references/import") {
+            val ref = call.parameters["ref"]?.takeIf { it.isNotBlank() } ?: DEFAULT_REF
+            val read = withContext(Dispatchers.IO) { References(config.mirror.toFile()).read(ref) }
+            if (read == null) {
+                call.respond(HttpStatusCode.NotFound, "no commit $ref in the mirror yet; it appears once the runner has fetched")
+            } else {
+                val (sha, rows) = read
+                val changed = withContext(Dispatchers.IO) { store.putReferences(rows, "git:$sha") }
+                store.referenceImported(sha, changed)
+                call.respond(ReferenceImport(sha, rows.size, changed))
+            }
+        }
+        get("/experiments/{id}/reference") {
+            val id = call.parameters["id"]!!.toLong()
+            val cases = store.cases(id)
+            val references = store.references(cases.map { it.problem.collection to it.problem.problem })
+            call.respond(References.compare(store.arms(id).map { it.arm.label }, cases, references))
         }
         get("/compare") {
             val ids = requireNotNull(call.parameters["jobs"]) { "jobs=<id>,<id>… is required" }.split(',').map { it.trim().toLong() }
@@ -103,7 +143,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // Arms are named by their job, so the same arm of two runs stays two columns.
             val arms = jobs.flatMap { job -> store.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
             val cases = jobs.flatMap { job -> store.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
-            call.respondText(comparePage(config, jobs, arms, cases), ContentType.Text.Html)
+            val references = store.references(cases.map { it.problem.collection to it.problem.problem })
+            call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
         get("/experiments/{id}/stats") {
@@ -129,10 +170,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 job == null -> call.respond(HttpStatusCode.NotFound, "no such job")
                 call.wantsHtml() -> {
                     val experiment = job.experiment != null
+                    val cases = if (experiment) store.cases(job.id) else emptyList()
                     val page = jobPage(
                         config, job, "failed" in call.parameters,
                         arms = if (experiment) store.arms(job.id) else emptyList(),
-                        cases = if (experiment) store.cases(job.id) else emptyList(),
+                        cases = cases,
+                        references = store.references(cases.map { it.problem.collection to it.problem.problem }),
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                     )

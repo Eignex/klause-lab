@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -87,6 +88,7 @@ data class ArmSummary(
 )
 
 /** Arms that contradict each other on one problem, which at least one of them got wrong. */
+@Serializable
 data class Disagreement(val problem: Problem, val reason: String)
 
 data class Comparison(val arms: List<ArmSummary>, val disagreements: List<Disagreement>)

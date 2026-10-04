@@ -21,7 +21,7 @@ internal fun indexPage(
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
-    append("<header><h1><a href=\"/\">klause lab</a></h1>")
+    append("<header><h1>Queue</h1>")
     append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active)}</p></header>")
     if (front) {
         append("<section><h2>Active</h2><div id=\"active\" data-live>${activeTable(config, active)}</div></section>")
@@ -56,11 +56,12 @@ internal fun jobPage(
     cases: List<CaseResult> = emptyList(),
     showCommands: Boolean = true,
     previous: Long? = null,
+    references: Map<Pair<String, String>, Reference> = emptyMap(),
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
     append(head("${job.id} ${job.name} · klause lab", live = active))
-    append("<header><h1><a href=\"/\">klause lab</a> / ${job.id} ${esc(job.name)}</h1></header>")
+    append("<header><h1>${job.id} ${esc(job.name)}</h1></header>")
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
@@ -102,7 +103,7 @@ internal fun jobPage(
         append("<a href=\"/compare?jobs=$previous,${job.id}\">compare with it</a> · ")
         append("<a href=\"/trend${query("name" to job.name.substringBefore('@'))}\">trend</a></p>")
     }
-    if (job.experiment != null) append(experimentSection(config, job.id, arms, cases))
+    if (job.experiment != null) append(experimentSection(config, job.id, arms, cases, references))
     if (!showCommands) {
         append("<p><a href=\"/jobs/${job.id}?commands\">every case's command</a></p></div>")
         append(SCRIPT)
@@ -136,7 +137,13 @@ internal fun jobPage(
 }
 
 /** An experiment's results: each arm's totals and score, the disagreements, and every problem across the arms. */
-private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
+private fun experimentSection(
+    config: Config,
+    job: Long?,
+    arms: List<PlannedArm>,
+    cases: List<CaseResult>,
+    references: Map<Pair<String, String>, Reference> = emptyMap(),
+): String = buildString {
     if (arms.isEmpty()) {
         append("<p class=\"muted\">Not planned yet: the runner selects the problems and writes the cases when it sets the job up.</p>")
         return@buildString
@@ -190,8 +197,34 @@ private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>
         append("</ul>")
     }
     if (stats.noise.isNotEmpty()) append(noiseTable(stats.noise))
-    append(problemGrid(labels, cases))
+    if (references.isNotEmpty()) append(referenceSection(labels, cases, references))
+    append(problemGrid(labels, cases, references))
 }
+
+/** Each arm against the lab's reference results: who solved what, optima, gaps, and where they contradict. */
+private fun referenceSection(labels: List<String>, cases: List<CaseResult>, references: Map<Pair<String, String>, Reference>): String =
+    buildString {
+        val comparison = References.compare(labels, cases, references)
+        append("<h2>Against the reference <small>${references.size} of ${cases.map { it.problem }.distinct().size} problems have ")
+        append("a reference verdict · <a href=\"/references\">reference results</a></small></h2>")
+        append("<div class=\"scroll\"><table><tr><th>arm</th><th class=\"num\">covered</th><th class=\"num\">both solved</th>")
+        append("<th class=\"num\">only the arm</th><th class=\"num\">only the reference</th><th class=\"num\">proven optima reached</th>")
+        append("<th class=\"num\">beats its best</th><th class=\"num\">mean gap</th></tr>")
+        for (r in comparison.summaries) {
+            append("<tr><td><b>${esc(r.arm)}</b></td><td class=\"num\">${r.covered}</td><td class=\"num\">${r.bothSolved}</td>")
+            append("<td class=\"num\">${if (r.armOnly > 0) "<span class=\"DONE\">${r.armOnly}</span>" else "0"}</td>")
+            append("<td class=\"num\">${if (r.referenceOnly > 0) "<span class=\"FAILED\">${r.referenceOnly}</span>" else "0"}</td>")
+            append("<td class=\"num\">${r.optimaMatched}/${r.provenOptima}</td><td class=\"num\">${r.better}</td>")
+            append("<td class=\"num\">${r.meanGap?.let { "%.1f%%".format(it * 100) } ?: "–"}</td></tr>")
+        }
+        append("</table></div><p class=\"muted\"><small>The reference ran under its own budget, so this compares verdicts ")
+        append("and objectives, not speed. Mean gap is the relative distance to the reference objective where the arm is worse.</small></p>")
+        if (comparison.disagreements.isNotEmpty()) {
+            append("<h2 class=\"FAILED\">Disagreements with the reference <small>${comparison.disagreements.size}</small></h2><ul class=\"error\">")
+            for (d in comparison.disagreements) append("<li><code>${esc(name(d.problem))}</code>: ${esc(d.reason)}</li>")
+            append("</ul>")
+        }
+    }
 
 /** An arm against the baseline: the time ratio with its interval and test, then better and worse with theirs. */
 private fun versus(p: Paired): String {
@@ -227,11 +260,16 @@ private const val SIGNIFICANT = 0.05
 private const val NOISE_ROWS = 50
 
 /** One row per problem, one cell per arm with its outcome on each seed; the arm that scores best on a row is marked. */
-private fun problemGrid(labels: List<String>, cases: List<CaseResult>): String = buildString {
+private fun problemGrid(
+    labels: List<String>,
+    cases: List<CaseResult>,
+    references: Map<Pair<String, String>, Reference> = emptyMap(),
+): String = buildString {
     val byProblem = cases.groupBy { it.problem }
     append("<h2>Problems <small><label><input type=\"checkbox\" id=\"differ\"> only where arms differ</label></small></h2>")
     append("<div class=\"scroll\"><table class=\"grid\"><tr><th>problem</th>")
     for (label in labels) append("<th>${esc(label)}</th>")
+    if (references.isNotEmpty()) append("<th class=\"ref\">reference</th>")
     append("</tr>")
     for ((problem, ofProblem) in byProblem) {
         val outcomes = ofProblem.groupBy { it.arm }.mapValues { (_, cs) -> cs.sortedBy { it.seed ?: Long.MIN_VALUE } }
@@ -254,9 +292,23 @@ private fun problemGrid(labels: List<String>, cases: List<CaseResult>): String =
             })
             append("</td>")
         }
+        if (references.isNotEmpty()) append("<td class=\"ref\">${referenceVerdict(references[problem.collection to problem.problem])}</td>")
         append("</tr>")
     }
     append("</table></div>")
+}
+
+/** A reference verdict in a word, the solver beside it and its time against its own budget on hover. */
+private fun referenceVerdict(r: Reference?): String {
+    if (r == null) return "<span class=\"muted\">–</span>"
+    val word = when {
+        r.feasible == false -> "infeasible"
+        r.feasible == null -> "unknown"
+        r.objective != null -> number(r.objective) + if (r.proven) "*" else ""
+        else -> "sat"
+    }
+    val title = "${r.solver}: ${"%.2f".format(r.elapsedMs / 1000.0)}s of a ${r.budgetMs / 1000}s budget"
+    return "<span title=\"${esc(title)}\">$word</span> <small class=\"muted\">${esc(r.solver)}</small>"
 }
 
 /** One outcome in a word: the objective (starred when proven), sat, infeasible, unknown, unsupported, a load error, or
@@ -282,12 +334,18 @@ private fun describe(arm: Arm) = arm.values.toSortedMap().entries.joinToString("
  * Several experiments side by side, each arm named by its job: a scheduled run against the one before it, or any
  * experiments over the same problems. Problems pair up by suite and name, seeds by value.
  */
-internal fun comparePage(config: Config, jobs: List<Job>, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
+internal fun comparePage(
+    config: Config,
+    jobs: List<Job>,
+    arms: List<PlannedArm>,
+    cases: List<CaseResult>,
+    references: Map<Pair<String, String>, Reference> = emptyMap(),
+): String = buildString {
     append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · klause lab", live = false))
-    append("<header><h1><a href=\"/\">klause lab</a> / compare ")
+    append("<header><h1>Compare ")
     append(jobs.joinToString(" · ") { "<a href=\"/jobs/${it.id}\">${it.id} ${esc(it.name)}</a>" })
     append("</h1></header><div>")
-    append(experimentSection(config, null, arms, cases))
+    append(experimentSection(config, null, arms, cases, references))
     append("</div>")
     append(SCRIPT)
     append("</body></html>")
@@ -297,9 +355,21 @@ internal fun comparePage(config: Config, jobs: List<Job>, arms: List<PlannedArm>
  * How a schedule's runs moved over its commits: solved and proven shares with the solved interval, PAR-2 time, and
  * solved share per suite, against commit or date. The runs ride in the page as JSON; a small script draws the charts.
  */
-internal fun trendPage(name: String, runs: List<TrendRun>, repoUrl: String): String = buildString {
-    append(head("$name trend · klause lab", live = runs.any { !it.finished }))
-    append("<header><h1><a href=\"/\">klause lab</a> / trend of ${esc(name)}</h1>")
+internal fun trendPage(name: String?, runs: List<TrendRun>, repoUrl: String, schedules: List<String> = emptyList()): String = buildString {
+    append(head("${name ?: "regression"} · klause lab", live = runs.any { !it.finished }, tab = Tab.REGRESSION))
+    if (name == null) {
+        append("<header><h1>Regression</h1></header><p class=\"muted\">No schedule yet: <code>lab schedule</code> sets one up, ")
+        append("and its runs chart here, one point per commit.</p></body></html>")
+        return@buildString
+    }
+    append("<header><h1>Regression: ${esc(name)}</h1>")
+    if (schedules.size > 1) {
+        append("<div class=\"tools\">")
+        for (other in schedules) {
+            append("<a class=\"chip${if (other == name) " on" else ""}\" href=\"/trend${query("name" to other)}\">${esc(other)}</a>")
+        }
+        append("</div>")
+    }
     append("<p class=\"muted\">${runs.size} runs · <a href=\"/${query("name" to name)}\">its jobs</a></p></header>")
     if (runs.isEmpty()) {
         append("<p class=\"muted\">No run of this schedule has results yet.</p></body></html>")
@@ -505,9 +575,56 @@ private const val TREND_SCRIPT = """<script>
 })();
 </script>"""
 
+/** The reference tab: what the lab's reference results cover, a search over them, and the import. */
+internal fun referencesPage(
+    coverage: List<ReferenceCoverage>,
+    lastImport: Triple<String, Long, Int>?,
+    search: String?,
+    found: List<Pair<Pair<String, String>, Reference>>,
+    repoUrl: String,
+): String = buildString {
+    append(head("reference · klause lab", live = false, tab = Tab.REFERENCE))
+    append("<header><h1>Reference</h1><p class=\"muted\">${coverage.sumOf { it.rows }} results from ")
+    append("${coverage.map { it.solver }.distinct().size} solvers over ${coverage.map { it.collection }.distinct().size} collections")
+    if (lastImport != null) {
+        val (sha, at, rows) = lastImport
+        val commit = commitUrl(repoUrl, sha)?.let { "<a href=\"$it\">${sha.take(9)}</a>" } ?: sha.take(9)
+        append(" · last import from <code>$commit</code> ${ago(at)}, $rows rows changed")
+    }
+    append("</p></header>")
+    append("<div class=\"actions\"><button onclick=\"act('/references/import?ref=main', null, ")
+    append("'Import the reference tables from klause main? Stronger results already here are kept.')\">import from main</button>")
+    append("<form method=\"get\" action=\"/references\" class=\"tools\" style=\"margin:0\"><input name=\"q\" type=\"search\" ")
+    append("placeholder=\"find a problem or collection\" value=\"${esc(search.orEmpty())}\"><button>find</button></form></div>")
+    if (search != null) {
+        append("<h2>Results for ${esc(search)} <small>${found.size}${if (found.size == SEARCH_LIMIT) "+" else ""}</small></h2>")
+        append("<div class=\"scroll\"><table><tr><th>collection</th><th>problem</th><th>verdict</th><th class=\"num\">time</th>")
+        append("<th class=\"num\">budget</th></tr>")
+        for ((key, r) in found) {
+            append("<tr><td>${esc(key.first)}</td><td><code>${esc(key.second)}</code></td><td>${referenceVerdict(r)}</td>")
+            append("<td class=\"num\">${"%.2f".format(r.elapsedMs / 1000.0)}s</td><td class=\"num\">${r.budgetMs / 1000}s</td></tr>")
+        }
+        append("</table></div>")
+    }
+    append("<h2>Coverage</h2>")
+    if (coverage.isEmpty()) append("<p class=\"muted\">No reference results yet: import them from klause main.</p>")
+    append("<div class=\"scroll\"><table><tr><th>collection</th><th>solver</th><th class=\"num\">problems</th>")
+    append("<th class=\"num\">decided</th><th class=\"num\">proven</th><th class=\"num\">infeasible</th><th>updated</th></tr>")
+    for (c in coverage) {
+        append("<tr><td>${esc(c.collection)}</td><td>${esc(c.solver)}</td><td class=\"num\">${c.rows}</td>")
+        append("<td class=\"num\">${c.decided}</td><td class=\"num\">${c.proven}</td><td class=\"num\">${c.infeasible}</td>")
+        append("<td>${ago(c.updatedAt)}</td></tr>")
+    }
+    append("</table></div>")
+    append(SCRIPT)
+    append("</body></html>")
+}
+
+internal const val SEARCH_LIMIT = 200
+
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
     append(head("$jobId files · klause lab", live = false))
-    append("<header><h1><a href=\"/\">klause lab</a> / <a href=\"/jobs/$jobId\">$jobId</a> / files</h1></header>")
+    append("<header><h1><a href=\"/jobs/$jobId\">$jobId</a> / files</h1></header>")
     if (files.isEmpty()) append("<p class=\"muted\">No files yet.</p>")
     append("<div class=\"scroll\"><table><tr><th>path</th><th class=\"num\">size</th></tr>")
     for (file in files) {
@@ -698,9 +815,18 @@ private fun esc(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").
 
 private const val TAIL_BYTES = 65_536
 
-private fun head(title: String, live: Boolean) = """<!doctype html><html><head><meta charset="utf-8">
+/** The lab's three views, as the tab bar shows them. */
+internal enum class Tab(val label: String, val href: String) {
+    QUEUE("Queue", "/"), REGRESSION("Regression", "/trend"), REFERENCE("Reference", "/references")
+}
+
+private fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE) = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE</style></head>
-<body${if (live) " data-refresh" else ""}>"""
+<body${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">klause lab</a>${tabs(tab)}</nav>"""
+
+private fun tabs(active: Tab) = Tab.entries.joinToString("") {
+    "<a href=\"${it.href}\"${if (it == active) " class=\"on\" aria-current=\"page\"" else ""}>${it.label}</a>"
+}
 
 private const val STYLE = """
 :root{--bg:#fff;--fg:#111;--muted:#666;--line:#ddd;--soft:#f3f3f3;--link:#0969da;
@@ -726,9 +852,15 @@ button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:
 .actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}.actions input{width:4em;font:inherit}
 dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0}dl.meta dt{color:var(--muted)}dl.meta dd{margin:0}
 table.grid{width:auto}table.grid td{min-width:110px}
+table.grid .ref{border-left:1px solid var(--line);color:var(--muted)}
 table.grid td.best{background:color-mix(in srgb,var(--ok) 14%,transparent)}ul.error{color:var(--bad)}
 pre.error{color:var(--bad);white-space:pre-wrap;word-break:break-all;background:var(--soft);padding:8px}
 .pager{margin-top:12px}
+nav.tabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--line);margin:-8px 0 20px;flex-wrap:wrap}
+nav.tabs a{padding:8px 14px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+nav.tabs a:hover{color:var(--fg)}nav.tabs a.on{color:var(--fg);border-bottom-color:var(--link);font-weight:600}
+nav.tabs a.brand{color:var(--fg);font-weight:700;padding-left:0;margin-right:12px}
+a.chip{text-decoration:none;display:inline-block}
 .chart svg,.multiple svg{display:block}.chart{width:100%}
 .grid{stroke:var(--line);stroke-width:1}.tick{fill:var(--muted);font-size:11px}.tick.mono{font-family:ui-monospace,monospace}
 .endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}

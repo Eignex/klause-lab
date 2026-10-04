@@ -150,6 +150,14 @@ class Store(file: Path) {
                     arm_idx INTEGER NOT NULL, seed INTEGER, record TEXT, repeat INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (job_id, idx))""",
             )
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS reference_rows (
+                    collection TEXT NOT NULL, problem TEXT NOT NULL, solver TEXT NOT NULL, maximize INTEGER NOT NULL,
+                    objective REAL, feasible INTEGER, proven INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL,
+                    budget_ms INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (collection, problem, solver))""",
+            )
+            it.execute("CREATE TABLE IF NOT EXISTS reference_imports (sha TEXT NOT NULL, at INTEGER NOT NULL, rows INTEGER NOT NULL)")
             // A database from before repeats gains the column; every case it holds was its seed's only run.
             val caseColumns = it.executeQuery("PRAGMA table_info(cases)").use { rows ->
                 generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
@@ -457,6 +465,104 @@ class Store(file: Path) {
         if (deleted) for (table in listOf("commands", "arms", "problems", "cases")) update("DELETE FROM $table WHERE job_id = ?", id)
         deleted
     }
+
+    /**
+     * Keep each of [rows] for its (collection, problem, solver) unless the stored row is stronger (see
+     * [References.stronger]), so a re-import or a weaker rerun never loses a proof. Returns how many rows changed.
+     */
+    @Synchronized
+    fun putReferences(rows: List<Pair<Pair<String, String>, Reference>>, source: String): Int = transaction {
+        val at = now()
+        var changed = 0
+        val select = connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND solver = ?")
+        val upsert = connection.prepareStatement(
+            "INSERT OR REPLACE INTO reference_rows (collection, problem, solver, maximize, objective, feasible, proven, " +
+                "elapsed_ms, budget_ms, source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        select.use {
+            upsert.use {
+                for ((key, row) in rows) {
+                    select.setString(1, key.first)
+                    select.setString(2, key.second)
+                    select.setString(3, row.solver)
+                    val old = select.executeQuery().use { r -> if (r.next()) reference(r) else null }
+                    if (old != null && (old == row || !References.stronger(row, old))) continue
+                    upsert.setString(1, key.first)
+                    upsert.setString(2, key.second)
+                    upsert.setString(3, row.solver)
+                    upsert.setInt(4, if (row.maximize) 1 else 0)
+                    upsert.setObject(5, row.objective)
+                    upsert.setObject(6, row.feasible?.let { if (it) 1 else 0 })
+                    upsert.setInt(7, if (row.proven) 1 else 0)
+                    upsert.setLong(8, row.elapsedMs)
+                    upsert.setLong(9, row.budgetMs)
+                    upsert.setString(10, source)
+                    upsert.setLong(11, at)
+                    upsert.executeUpdate()
+                    changed++
+                }
+            }
+        }
+        changed
+    }
+
+    @Synchronized
+    fun referenceImported(sha: String, rows: Int) = update("INSERT INTO reference_imports (sha, at, rows) VALUES (?, ?, ?)", sha, now(), rows)
+
+    /** The last import: commit, time and rows changed. */
+    @Synchronized
+    fun lastReferenceImport(): Triple<String, Long, Int>? = connection.prepareStatement(
+        "SELECT sha, at, rows FROM reference_imports ORDER BY at DESC LIMIT 1",
+    ).use { it.executeQuery().use { r -> if (r.next()) Triple(r.getString(1), r.getLong(2), r.getInt(3)) else null } }
+
+    /** The strongest reference row of each of [keys] that has any, keyed by (collection, problem). */
+    @Synchronized
+    fun references(keys: Collection<Pair<String, String>>): Map<Pair<String, String>, Reference> =
+        connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ?").use { statement ->
+            keys.distinct().mapNotNull { key ->
+                statement.setString(1, key.first)
+                statement.setString(2, key.second)
+                val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
+                rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
+            }.toMap()
+        }
+
+    /** Per collection and solver: rows, decided, proven, infeasible, and when last updated. */
+    @Synchronized
+    fun referenceCoverage(): List<ReferenceCoverage> = connection.prepareStatement(
+        "SELECT collection, solver, COUNT(*), SUM(feasible IS NOT NULL), SUM(proven), SUM(feasible = 0), MAX(updated_at) " +
+            "FROM reference_rows GROUP BY collection, solver ORDER BY collection, solver",
+    ).use { statement ->
+        statement.executeQuery().use { r ->
+            generateSequence {
+                if (!r.next()) null else ReferenceCoverage(r.getString(1), r.getString(2), r.getInt(3), r.getInt(4), r.getInt(5), r.getInt(6), r.getLong(7))
+            }.toList()
+        }
+    }
+
+    /** Up to [limit] reference rows whose problem contains [text], with their keys. */
+    @Synchronized
+    fun searchReferences(text: String, limit: Int): List<Pair<Pair<String, String>, Reference>> = connection.prepareStatement(
+        "SELECT * FROM reference_rows WHERE problem LIKE ? ESCAPE '\\' OR collection LIKE ? ESCAPE '\\' ORDER BY collection, problem LIMIT ?",
+    ).use { statement ->
+        val like = "%" + likeEscape(text) + "%"
+        statement.setString(1, like)
+        statement.setString(2, like)
+        statement.setInt(3, limit)
+        statement.executeQuery().use { r ->
+            generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
+        }
+    }
+
+    private fun reference(r: ResultSet) = Reference(
+        solver = r.getString("solver"),
+        maximize = r.getInt("maximize") == 1,
+        objective = r.getDouble("objective").takeUnless { r.wasNull() },
+        feasible = r.getInt("feasible").takeUnless { r.wasNull() }?.let { it == 1 },
+        proven = r.getInt("proven") == 1,
+        elapsedMs = r.getLong("elapsed_ms"),
+        budgetMs = r.getLong("budget_ms"),
+    )
 
     /** Make schedule [id] due, so the runner checks it at once; false when there is no such schedule. */
     @Synchronized
