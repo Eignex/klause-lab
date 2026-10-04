@@ -11,6 +11,7 @@
 #   lab wait <id>...                                         block until every job given has ended; prints each end
 #   lab schedule <name> <ref> <experiment.json> <interval-sec>   rerun the experiment on every new commit of <ref>
 #   lab schedules | lab unschedule <id>
+#   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> <n> [out|err]
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
@@ -54,6 +55,7 @@ schedule)
 compare) echo "$url/compare?jobs=$(IFS=,; echo "$*")" ;;
 schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
       "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv' ;;
+check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
 unschedule) curl -sS -X POST "$url/schedules/$1/delete"; echo ;;
 pause) curl -sS -X POST "$url/jobs/$1/pause"; echo ;;
 resume) curl -sS -X POST "$url/jobs/$1/resume"; echo ;;

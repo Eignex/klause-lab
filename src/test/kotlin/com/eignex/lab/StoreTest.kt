@@ -223,4 +223,15 @@ class StoreTest {
 
         assertEquals(spec, store.job(id)?.experiment)
     }
+
+    @Test
+    fun `a schedule asked to check now is due whatever its interval`() {
+        val store = store()
+        val id = store.createSchedule("s", "main", ExperimentSpec("s", listOf(mapOf("suite" to "s"))), 3600)
+        store.scheduleChecked(id, now())
+
+        store.checkNow(id)
+
+        assertEquals(null, store.schedules().single().checkedAt)
+    }
 }

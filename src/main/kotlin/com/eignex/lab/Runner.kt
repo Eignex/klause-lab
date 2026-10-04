@@ -162,21 +162,24 @@ class Runner(private val config: Config, private val store: Store) {
     /**
      * Queue a run of each due schedule whose ref has moved since its last run, pinned to the commit it resolves to, so
      * the job records exactly what it ran. A schedule whose ref has not moved queues nothing, and one whose previous run
-     * has not ended waits for it.
+     * has not ended waits for it. A branch or tag is first asked of origin directly, one small request, so a check that
+     * finds it unmoved fetches nothing and checks can come every minute or two; the mirror is fetched only when it
+     * moved, or for a ref origin does not advertise, such as a commit.
      */
     private fun enqueueScheduled() {
         val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
-        if (due.isEmpty()) return
-        synchronized(mirrorLock) {
-            if (!config.mirror.exists()) capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
-            capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
-        }
         for (schedule in due) {
             store.scheduleChecked(schedule.id, now())
             if (schedule.experiment == null) continue
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
+            val advertised = advertised(schedule.ref)
+            if (advertised != null && advertised == schedule.lastSha) continue
             val sha = runCatching {
                 synchronized(mirrorLock) {
+                    if (!config.mirror.exists()) {
+                        capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+                    }
+                    capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
                     capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}")
                 }
             }.getOrNull() ?: continue
@@ -188,6 +191,14 @@ class Runner(private val config: Config, private val store: Store) {
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
     }
+
+    /** The commit origin advertises for branch or tag [ref]; null when it names neither, or origin does not answer. */
+    private fun advertised(ref: String): String? = runCatching {
+        capture(
+            config.dataDir.toFile(),
+            "GIT_TERMINAL_PROMPT=0 git ls-remote ${quote(config.repoUrl)} ${quote("refs/heads/$ref")} ${quote("refs/tags/$ref")}",
+        )
+    }.getOrNull()?.lineSequence()?.map { it.substringBefore('\t').trim() }?.firstOrNull { SHA.matches(it) }
 
     /**
      * Set an experiment up: build every commit its arms name, each in its own worktree, and on the first setup plan
@@ -467,7 +478,9 @@ class Runner(private val config: Config, private val store: Store) {
         const val CASES = "cases"
         const val SHA_DIR_LENGTH = 12
         const val DOCKER_POLL_MS = 5000L
-        const val SCHEDULE_POLL_MS = 30_000L
+        /** How often the schedule thread looks for a due schedule: the most a forced check waits. */
+        const val SCHEDULE_POLL_MS = 10_000L
+        val SHA = Regex("[0-9a-f]{40}")
         const val DOCKER_LOG_EVERY_MS = 60_000L
     }
 }

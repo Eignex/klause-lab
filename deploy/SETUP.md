@@ -81,7 +81,10 @@ fails at planning with the count and the estimate; resubmit with `"confirm": tru
 runner checks it every interval, also while a job runs: when `<ref>` resolves to a commit other than the last one it
 queued, and that run has ended, it queues the experiment with every arm at the new commit, named `<name>@<sha>`, which
 waits its turn by priority like any other. A scheduled experiment's configs name no `ref`. An unchanged ref queues
-nothing. `lab schedules` lists them with the last commit and job; `lab unschedule <id>` removes one. A schedule from
+nothing. A check asks origin for a branch or tag's commit with `git ls-remote`, one small request, and fetches only when
+it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab check <id>` makes a schedule due at once,
+and the runner checks it within 10 s, which is also what a push hook would call. `lab schedules` lists them with the
+last commit and job; `lab unschedule <id>` removes one. A schedule from
 before experiments queues nothing and shows as legacy.
 
 ## Crash safety
@@ -218,6 +221,7 @@ pages and files. The live parts refresh in place every 10 s, while a job is unfi
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
+| `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
 | `POST` | `/jobs/{id}/import` | an ended job's collected bench records as a new, finished experiment → `{"id"}` |
 | `GET` | `/health` | queue counts and the koblas report |
 

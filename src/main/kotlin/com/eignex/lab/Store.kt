@@ -449,6 +449,10 @@ class Store(file: Path) {
     @Synchronized
     fun deleteSchedule(id: Long): Boolean = update("DELETE FROM schedules WHERE id = ?", id) == 1
 
+    /** Make schedule [id] due, so the runner checks it at once; false when there is no such schedule. */
+    @Synchronized
+    fun checkNow(id: Long): Boolean = update("UPDATE schedules SET checked_at = NULL WHERE id = ?", id) == 1
+
     @Synchronized
     fun scheduleChecked(id: Long, at: Long) = update("UPDATE schedules SET checked_at = ? WHERE id = ?", at, id)
 

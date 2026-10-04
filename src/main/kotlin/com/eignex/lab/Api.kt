@@ -196,6 +196,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/schedules") { call.respond(store.schedules()) }
+        // The runner's schedule thread finds it due within seconds; a push hook or relay can call this instead of waiting.
+        post("/schedules/{id}/check") {
+            val found = store.checkNow(call.parameters["id"]!!.toLong())
+            call.respond(if (found) HttpStatusCode.Accepted else HttpStatusCode.NotFound, if (found) "checking" else "no such schedule")
+        }
         post("/schedules/{id}/delete") {
             val deleted = store.deleteSchedule(call.parameters["id"]!!.toLong())
             call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")
