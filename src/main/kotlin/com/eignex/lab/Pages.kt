@@ -154,14 +154,21 @@ private fun experimentSection(
     val seeds = cases.map { it.seed }.distinct().sortedBy { it ?: Long.MIN_VALUE }
     val repeats = (cases.maxOfOrNull { it.repeat } ?: 0) + 1
     val total = cases.groupBy { it.arm }
-    append("<h2>Arms <small>${cases.map { it.problem }.distinct().size} problems")
+    // One arm has nothing to compare against, and a reference run is the reference, so neither shows the comparison.
+    val compared = arms.size > 1
+    val referenceRun = arms.all { it.arm.values["backend"] == REFERENCE_BACKEND }
+    if (referenceRun) {
+        append("<p class=\"note\">A reference run: each problem solved by its format's reference solver, every verdict added ")
+        append("to the <a href=\"/references\">reference results</a> as it lands, where a stronger one already there stays.</p>")
+    }
+    append("<h2>${if (compared) "Arms" else "Results"} <small>${cases.map { it.problem }.distinct().size} problems")
     if (seeds.size > 1) append(" × ${seeds.size} seeds")
     if (repeats > 1) append(" × $repeats repeats")
     if (job != null) append(" · <a href=\"/experiments/$job/cases.csv\">cases.csv</a>")
     append("</small></h2>")
     append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
-    append("<th class=\"num\">proven</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th><th class=\"num\">score</th>")
-    append("<th>vs ${esc(labels.first())}</th>")
+    append("<th class=\"num\">proven</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th>")
+    if (compared) append("<th class=\"num\">score</th><th>vs ${esc(labels.first())}</th>")
     append(if (job != null) "<th>bench csv</th></tr>" else "</tr>")
     val paired = stats.paired.associateBy { it.label }
     for ((index, planned) in arms.withIndex()) {
@@ -174,8 +181,8 @@ private fun experimentSection(
         append("<td class=\"num\">${estimate(armStats.solved, "%.1f")}</td><td class=\"num\">${summary.proven}</td>")
         append("<td class=\"num\">${if (summary.unsupported > 0) "<span class=\"PARTIAL\">${summary.unsupported}</span>" else "0"}</td>")
         append("<td class=\"num\">${if (summary.errors > 0) "<span class=\"FAILED\">${summary.errors}</span>" else "0"}</td>")
-        append("<td class=\"num\">${estimate(armStats.par2, "%.2f")}</td><td class=\"num\">${estimate(armStats.score, "%.1f")}</td>")
-        append("<td>$versus</td>")
+        append("<td class=\"num\">${estimate(armStats.par2, "%.2f")}</td>")
+        if (compared) append("<td class=\"num\">${estimate(armStats.score, "%.1f")}</td><td>$versus</td>")
         if (job != null) {
             append("<td>")
             append(seeds.joinToString(" ") { seed ->
@@ -188,18 +195,21 @@ private fun experimentSection(
     }
     append("</table></div>")
     append("<p class=\"muted\"><small>Intervals are 95%, bootstrapped over problems, a problem's seeds and repeats averaged. ")
-    append("PAR-2 charges an unsolved run twice its budget. The time ratio is the geometric mean of an arm's PAR-2 time over the ")
-    append("first arm's, on the problems either solved; its p is a Wilcoxon signed-rank test. Equal results whose times differ by ")
-    append("less than 0.25 s or 10% are a tie. Better and worse count problems by ")
-    append("the score, with a sign test. p below 0.05 is bold.</small></p>")
+    append("PAR-2 charges an unsolved run twice its budget.")
+    if (compared) {
+        append(" The time ratio is the geometric mean of an arm's PAR-2 time over the first arm's, on the problems either ")
+        append("solved; its p is a Wilcoxon signed-rank test. Equal results whose times differ by less than 0.25 s or 10% are a ")
+        append("tie. Better and worse count problems by the score, with a sign test. p below 0.05 is bold.")
+    }
+    append("</small></p>")
     if (comparison.disagreements.isNotEmpty()) {
         append("<h2 class=\"FAILED\">Disagreements <small>${comparison.disagreements.size}</small></h2><ul class=\"error\">")
         for (d in comparison.disagreements) append("<li><code>${esc(name(d.problem))}</code>: ${esc(d.reason)}</li>")
         append("</ul>")
     }
     if (stats.noise.isNotEmpty()) append(noiseTable(stats.noise))
-    if (references.isNotEmpty()) append(referenceSection(labels, cases, references))
-    append(problemGrid(labels, cases, references))
+    if (references.isNotEmpty() && !referenceRun) append(referenceSection(labels, cases, references))
+    append(problemGrid(labels, cases, if (referenceRun) emptyMap() else references, compared))
 }
 
 /** Each arm against the lab's reference results: who solved what, optima, gaps, and where they contradict. */
@@ -265,9 +275,12 @@ private fun problemGrid(
     labels: List<String>,
     cases: List<CaseResult>,
     references: Map<Pair<String, String>, Reference> = emptyMap(),
+    compared: Boolean = true,
 ): String = buildString {
     val byProblem = cases.groupBy { it.problem }
-    append("<h2>Problems <small><label><input type=\"checkbox\" id=\"differ\"> only where arms differ</label></small></h2>")
+    append("<h2>Problems")
+    if (compared) append(" <small><label><input type=\"checkbox\" id=\"differ\"> only where arms differ</label></small>")
+    append("</h2>")
     append("<div class=\"scroll\"><table class=\"grid\"><tr><th>problem</th>")
     for (label in labels) append("<th>${esc(label)}</th>")
     if (references.isNotEmpty()) append("<th class=\"ref\">reference</th>")
@@ -955,6 +968,7 @@ table.grid .ref{border-left:1px solid var(--line);color:var(--muted)}
 table.grid td.best{background:color-mix(in srgb,var(--ok) 14%,transparent)}ul.error{color:var(--bad)}
 pre.error{color:var(--bad);white-space:pre-wrap;word-break:break-all;background:var(--soft);padding:8px}
 .pager{margin-top:12px}
+p.note{background:var(--soft);border-left:3px solid var(--link);padding:8px 12px;margin:16px 0}
 nav.tabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--line);margin:-8px 0 20px;flex-wrap:wrap}
 nav.tabs a{padding:8px 14px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
 nav.tabs a:hover{color:var(--fg)}nav.tabs a.on{color:var(--fg);border-bottom-color:var(--link);font-weight:600}
