@@ -643,7 +643,7 @@ internal fun referencesPage(
 internal const val SEARCH_LIMIT = 200
 
 /** Test fixtures, not benchmarks: kept in the store, left out of the coverage view. */
-private val HIDDEN_COLLECTIONS = listOf("klause-bench/smoke-corpus/")
+private val HIDDEN_COLLECTIONS = listOf("klause-bench/smoke-corpus/", "klause-mzn-lib/")
 
 /** Families of collections that coverage folds into one expandable row: a name and which collections it holds. */
 private val FAMILIES: List<Pair<String, (String) -> Boolean>> = listOf(
