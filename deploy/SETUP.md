@@ -46,8 +46,9 @@ bench result cache is off) and its record lands in the store. `lab cases <id>` l
 
 An experiment's page (its job id) compares the arms:
 
-- each arm's commit, cases done, solved, proven (optima and infeasibility), errors and mean PAR-2 time (an unsolved
-  run charged twice its budget);
+- each arm's commit, cases done, solved, proven (optima and infeasibility), unsupported (models klause declines),
+  errors (solver crashes and problems that did not compile or parse) and mean PAR-2 time (an unsolved run charged
+  twice its budget);
 - 95% intervals on solved, PAR-2 and the score, bootstrapped over problems, a problem's seeds and repeats averaged
   first so each problem counts once;
 - each arm against the first: the geometric mean of its PAR-2 time over the first arm's on the problems either solved,
@@ -59,7 +60,9 @@ An experiment's page (its job id) compares the arms:
 - how each arm did against the first, problem by problem;
 - disagreements first: one arm proving infeasibility where another solves, different proven optima, or a solution
   better than a proven optimum;
-- every problem across the arms, the best cell marked, optionally only the rows where arms differ.
+- every problem across the arms, the best cell marked, optionally only the rows where arms differ. A cell reads
+  the objective (starred when proven), `sat`, `infeasible`, `unknown`, `unsupported` or `load error` (the reason on
+  hover), or the case's status when it left no record, such as `failed` for a run killed by its timeout.
 
 `lab compare <id> <id>...` gives the address of the same view over several experiments, each arm named by its job,
 problems paired by suite and name. A scheduled run's page links to the comparison with the run before it.

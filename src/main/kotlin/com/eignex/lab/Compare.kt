@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -18,6 +19,10 @@ data class Outcome(
     val timeToBestMs: Long?,
     val budgetMs: Long,
     val error: Boolean,
+    /** Why klause declined the model, when it did: the run decided nothing, and nothing went wrong. */
+    val unsupported: String? = null,
+    /** Why the problem never reached the solver: it did not compile or parse. */
+    val loadError: String? = null,
 ) {
     /** Solved beats unsolved, and proven (an optimum, or infeasibility) beats merely solved. */
     val rank: Int get() = when {
@@ -42,8 +47,13 @@ data class Outcome(
                 timeToBestMs = field("timeToBestMs")?.longOrNull,
                 budgetMs = field("budgetMs")?.longOrNull ?: 0,
                 error = field("command")?.content == "ERROR",
+                unsupported = stat(fields, "unsupported"),
+                loadError = stat(fields, "loadError"),
             )
         }
+
+        private fun stat(fields: JsonObject, name: String): String? =
+            ((fields["stats"] as? JsonObject)?.get(name) as? JsonPrimitive)?.content
     }
 }
 
@@ -54,7 +64,10 @@ data class ArmSummary(
     val solved: Int,
     /** Proven optima and proven infeasibility; a satisfied problem counts as solved only. */
     val proven: Int,
+    /** Solver crashes and problems that failed to load. */
     val errors: Int,
+    /** Problems klause declined. */
+    val unsupported: Int,
     /** Pairwise Borda points against every other arm, over the (problem, seed) pairs both ran. */
     val score: Double,
     /** Against the first arm: pairs this arm did better on, worse on, and drew. */
@@ -108,7 +121,7 @@ object Compare {
             }
             ArmSummary(
                 label, own.size, own.count { it.rank > 0 }, own.count { !it.error && (it.proven || it.feasible == false) },
-                own.count { it.error },
+                own.count { it.error || it.loadError != null }, own.count { it.unsupported != null },
                 score, wins, losses, ties,
             )
         }

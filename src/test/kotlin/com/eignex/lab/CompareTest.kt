@@ -63,4 +63,16 @@ class CompareTest {
 
         assertEquals(listOf(1, 1, 1), listOf(b.wins, b.losses, b.ties))
     }
+
+    @Test
+    fun `a declined model counts as unsupported and a broken one as an error`() {
+        val cases = listOf(
+            case("a", "p", """{"kind":"optimize","budgetMs":1000,"command":"LOAD","stats":{"unsupported":"unbounded float"}}"""),
+            case("a", "q", """{"kind":"satisfy","budgetMs":1000,"command":"LOAD","stats":{"loadError":"include error"}}"""),
+        )
+
+        val a = Compare.compare(listOf("a"), cases).arms.single()
+
+        assertEquals(listOf(1, 1, 0), listOf(a.unsupported, a.errors, a.solved))
+    }
 }

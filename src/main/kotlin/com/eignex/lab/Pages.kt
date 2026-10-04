@@ -150,7 +150,7 @@ private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>
     if (job != null) append(" · <a href=\"/experiments/$job/cases.csv\">cases.csv</a>")
     append("</small></h2>")
     append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
-    append("<th class=\"num\">proven</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th><th class=\"num\">score</th>")
+    append("<th class=\"num\">proven</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th><th class=\"num\">score</th>")
     append("<th>vs ${esc(labels.first())}</th>")
     append(if (job != null) "<th>bench csv</th></tr>" else "</tr>")
     val paired = stats.paired.associateBy { it.label }
@@ -162,6 +162,7 @@ private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>
         append("<tr><td><b>${esc(summary.label)}</b><br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
         append("<td><code>$commit</code></td><td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
         append("<td class=\"num\">${estimate(armStats.solved, "%.1f")}</td><td class=\"num\">${summary.proven}</td>")
+        append("<td class=\"num\">${if (summary.unsupported > 0) "<span class=\"PARTIAL\">${summary.unsupported}</span>" else "0"}</td>")
         append("<td class=\"num\">${if (summary.errors > 0) "<span class=\"FAILED\">${summary.errors}</span>" else "0"}</td>")
         append("<td class=\"num\">${estimate(armStats.par2, "%.2f")}</td><td class=\"num\">${estimate(armStats.score, "%.1f")}</td>")
         append("<td>$versus</td>")
@@ -255,10 +256,13 @@ private fun problemGrid(labels: List<String>, cases: List<CaseResult>): String =
     append("</table></div>")
 }
 
-/** One outcome in a word: the objective (starred when proven), sat, infeasible, unknown, or why there is none. */
+/** One outcome in a word: the objective (starred when proven), sat, infeasible, unknown, unsupported, a load error, or
+ *  the case's status when it left no record; a reason shows on hover. */
 private fun verdict(outcome: Outcome?, status: Status): String = when {
     outcome == null -> "<span class=\"${status.name}\">${status.name.lowercase()}</span>"
     outcome.error -> "<span class=\"FAILED\">error</span>"
+    outcome.unsupported != null -> "<span class=\"PARTIAL\" title=\"${esc(outcome.unsupported)}\">unsupported</span>"
+    outcome.loadError != null -> "<span class=\"FAILED\" title=\"${esc(outcome.loadError)}\">load error</span>"
     outcome.feasible == false -> "infeasible"
     outcome.feasible == null -> "<span class=\"muted\">unknown</span>"
     outcome.optimize && outcome.objective != null -> number(outcome.objective) + if (outcome.proven) "*" else ""

@@ -14,17 +14,19 @@ object Results {
     fun casesCsv(cases: List<CaseResult>): String = buildString {
         appendLine(
             "index,status,arm,seed,repeat,suite,problem,collection,family,format,kind,maximize,feasible,objective,proven," +
-                "timeToBestMs,timeToFirstFeasibleMs,budgetMs,error",
+                "timeToBestMs,timeToFirstFeasibleMs,budgetMs,error,unsupported,loadError",
         )
         for (case in cases) {
             val record = case.record as? JsonObject
             fun field(name: String) = (record?.get(name) as? JsonPrimitive)?.content?.takeUnless { it == "null" }.orEmpty()
+            fun stat(name: String) = ((record?.get("stats") as? JsonObject)?.get(name) as? JsonPrimitive)?.content.orEmpty()
             val row = listOf(
                 case.index.toString(), case.status.name, case.arm, case.seed?.toString().orEmpty(), case.repeat.toString(),
                 case.problem.suite,
                 case.problem.problem, case.problem.collection, case.problem.family, case.problem.format, field("kind"),
                 field("maximize"), field("feasible"), field("objective"), field("proven"), field("timeToBestMs"),
                 field("timeToFirstFeasibleMs"), field("budgetMs"), (field("command") == "ERROR").toString(),
+                stat("unsupported"), stat("loadError"),
             )
             appendLine(row.joinToString(",") { cell(it) })
         }
