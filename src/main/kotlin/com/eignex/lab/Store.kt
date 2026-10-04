@@ -36,6 +36,10 @@ data class Job(
     val error: String? = null,
     /** How many of the job's commands may run at once. The runner rereads it, so it can change mid-job. */
     val parallel: Int = 1,
+    /** The runner takes the highest priority first, the oldest first within one. */
+    val priority: Int = 0,
+    /** A paused job is not started, and a running one stops starting commands and goes back to the queue. */
+    val paused: Boolean = false,
     val commands: List<Command> = emptyList(),
 ) {
     val done: Int get() = commands.count { it.status == Status.DONE || it.status == Status.FAILED }
@@ -77,13 +81,21 @@ class Store(file: Path) {
                 generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
             }
             if ("parallel" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN parallel INTEGER NOT NULL DEFAULT 1")
+            if ("priority" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+            if ("paused" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
         }
     }
 
     @Synchronized
-    fun create(name: String, ref: String, commands: List<Pair<String, Long>>, parallel: Int = 1): Long = transaction {
+    fun create(
+        name: String,
+        ref: String,
+        commands: List<Pair<String, Long>>,
+        parallel: Int = 1,
+        priority: Int = 0,
+    ): Long = transaction {
         val id = connection.prepareStatement(
-            "INSERT INTO jobs (name, ref, status, created_at, parallel) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, ref, status, created_at, parallel, priority) VALUES (?, ?, ?, ?, ?, ?)",
             java.sql.Statement.RETURN_GENERATED_KEYS,
         ).use {
             it.setString(1, name)
@@ -91,6 +103,7 @@ class Store(file: Path) {
             it.setString(3, Status.QUEUED.name)
             it.setLong(4, now())
             it.setInt(5, parallel)
+            it.setInt(6, priority)
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
@@ -124,7 +137,8 @@ class Store(file: Path) {
         statement.executeQuery().use { rows -> if (rows.next()) job(rows) else null }
     }?.let { it.copy(commands = commands(it.id)) }
 
-    /** The job to work on: one left RUNNING by a crashed runner first, else the oldest queued one, claimed. */
+    /** The job to work on: one left RUNNING by a crashed runner first, else the queued, unpaused job with the highest
+     *  priority, oldest first, claimed. */
     @Synchronized
     fun next(): Job? = transaction {
         val running = connection.prepareStatement("SELECT id FROM jobs WHERE status = ? ORDER BY id LIMIT 1").use {
@@ -132,7 +146,8 @@ class Store(file: Path) {
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
         val id = running ?: connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 ORDER BY id LIMIT 1",
+            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
+                "ORDER BY priority DESC, id LIMIT 1",
         ).use {
             it.setString(1, Status.QUEUED.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
@@ -196,6 +211,35 @@ class Store(file: Path) {
 
     /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
     @Synchronized
+    fun setPriority(jobId: Long, priority: Int): Boolean =
+        update("UPDATE jobs SET priority = ? WHERE id = ?", priority, jobId) == 1
+
+    /** Pause or resume a job that has not finished. False when there is no such job or it already finished. */
+    @Synchronized
+    fun setPaused(jobId: Long, paused: Boolean): Boolean = update(
+        "UPDATE jobs SET paused = ? WHERE id = ? AND status IN (?, ?)",
+        if (paused) 1 else 0, jobId, Status.QUEUED.name, Status.RUNNING.name,
+    ) == 1
+
+    /** Whether running [jobId] should stop starting commands: it was paused, or a job it must give way to waits. */
+    @Synchronized
+    fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
+        "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE status = ? " +
+            "AND cancel_requested = 0 AND paused = 0 AND priority > (SELECT priority FROM jobs WHERE id = ?))",
+    ).use {
+        it.setLong(1, jobId)
+        it.setString(2, Status.QUEUED.name)
+        it.setLong(3, jobId)
+        it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
+    }
+
+    /** Put a running job that yielded back in the queue; its finished commands and its worktree stay. */
+    @Synchronized
+    fun requeue(jobId: Long) = update(
+        "UPDATE jobs SET status = ? WHERE id = ? AND status = ?", Status.QUEUED.name, jobId, Status.RUNNING.name,
+    )
+
+    @Synchronized
     fun setParallel(jobId: Long, parallel: Int): Boolean =
         update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
 
@@ -242,7 +286,7 @@ class Store(file: Path) {
         rows.getLong("id"), rows.getString("name"), rows.getString("ref"), rows.getString("sha"),
         Status.valueOf(rows.getString("status")), rows.getInt("cancel_requested") == 1, rows.getInt("setup_done") == 1,
         rows.getLong("created_at"), rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
-        rows.getString("error"), rows.getInt("parallel"),
+        rows.getString("error"), rows.getInt("parallel"), rows.getInt("priority"), rows.getInt("paused") == 1,
     )
 
     private fun update(sql: String, vararg values: Any?) = connection.prepareStatement(sql).use { statement ->

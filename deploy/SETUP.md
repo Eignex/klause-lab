@@ -109,6 +109,12 @@ turns it off.
 
 `deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` to override the default server, `192.168.50.104`.
 
+Jobs run highest priority first (`lab submit … [priority]`, default 0; `lab priority <id> <n>` changes it later), oldest
+first within one priority. A running job checks before each of its commands whether it was paused (`lab pause <id>`) or
+a higher-priority job is waiting; if so it starts no more, lets its running commands finish, and goes back to the
+queue with its worktree and finished commands kept, resuming at its next command when it is taken again. `lab resume
+<id>` releases a paused job.
+
 ```sh
 cat > sweep.txt <<'EOF'
 ./gradlew :klause-bench:bench --max-workers=1 --args="solve suite=mzn-bench per-family=1 max=50 seed=1"

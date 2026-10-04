@@ -104,4 +104,49 @@ class StoreTest {
 
         assertEquals(1, job.parallel)
     }
+
+    @Test
+    fun `the highest priority queued job is taken first`() {
+        val store = store()
+        store.create("low", "main", listOf("true" to 10L))
+        val high = store.create("high", "main", listOf("true" to 10L), priority = 5)
+
+        assertEquals(high, store.next()?.id)
+    }
+
+    @Test
+    fun `a paused queued job is passed over until it resumes`() {
+        val store = store()
+        val held = store.create("held", "main", listOf("true" to 10L))
+        store.setPaused(held, true)
+        val nextWhilePaused = store.next()?.id
+        store.setPaused(held, false)
+
+        assertEquals(listOf(null, held), listOf(nextWhilePaused, store.next()?.id))
+    }
+
+    @Test
+    fun `a running job yields to a higher priority job that arrives`() {
+        val store = store()
+        val running = store.create("running", "main", listOf("true" to 10L, "true" to 10L))
+        store.next()
+        val before = store.shouldYield(running)
+        store.create("urgent", "main", listOf("true" to 10L), priority = 1)
+
+        assertEquals(listOf(false, true), listOf(before, store.shouldYield(running)))
+    }
+
+    @Test
+    fun `a yielded job keeps its finished commands and is taken again`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L, "true" to 10L))
+        store.next()
+        store.commandStarted(id, 0)
+        store.commandFinished(id, 0, 0)
+        store.requeue(id)
+
+        val resumed = store.next()
+
+        assertEquals(listOf(Status.DONE, Status.QUEUED), resumed?.commands?.map { it.status })
+    }
 }

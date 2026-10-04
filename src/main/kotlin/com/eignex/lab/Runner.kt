@@ -71,7 +71,16 @@ class Runner(private val config: Config, private val store: Store) {
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
-        if (!dispatch(job, dir)) return cancel(job.id)
+        when (dispatch(job, dir)) {
+            Dispatched.CANCELLED -> return cancel(job.id)
+            // Its worktree and finished commands stay, so the job resumes at its next command when picked again.
+            Dispatched.YIELDED -> {
+                store.requeue(job.id)
+                log(job.id, "job paused between commands")
+                return
+            }
+            Dispatched.FINISHED -> Unit
+        }
         // Collected before the job reads as done, so a client that sees DONE finds the results in place.
         collect(job.id, dir)
         // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
@@ -85,13 +94,15 @@ class Runner(private val config: Config, private val store: Store) {
      * Run [job]'s queued commands in index order, up to the job's `parallel` many at once, and record each result
      * as it ends. The limit is reread from the store on every pass, so it can be raised or lowered while the job
      * runs: raising it starts more commands at once, lowering it lets the running ones finish and starts no more
-     * until the count is below it. False when the job was cancelled.
+     * until the count is below it. Before each command it checks whether the job was paused or a higher-priority job
+     * waits; then it starts no more and returns once the running ones end, so a job yields only between commands.
      */
-    private fun dispatch(job: Job, dir: Path): Boolean {
+    private fun dispatch(job: Job, dir: Path): Dispatched {
         val pending = ArrayDeque(job.commands.filter { it.status == Status.QUEUED })
         val active = LinkedHashMap<Int, Future<Int>>()
         val pool = Executors.newCachedThreadPool()
         var cancelled = false
+        var yielding = false
         try {
             while (pending.isNotEmpty() || active.isNotEmpty()) {
                 // Shutdown kills the commands and leaves them RUNNING to rerun; nothing here may record them.
@@ -103,7 +114,10 @@ class Runner(private val config: Config, private val store: Store) {
                 // Each running command sees the request and kills its own tree; the job ends once they have.
                 if (!cancelled && store.cancelRequested(job.id)) cancelled = true
                 if (cancelled) {
-                    if (active.isEmpty()) return false
+                    if (active.isEmpty()) return Dispatched.CANCELLED
+                } else if (yielding || (pending.isNotEmpty() && store.shouldYield(job.id))) {
+                    yielding = true
+                    if (active.isEmpty()) return Dispatched.YIELDED
                 } else {
                     val limit = store.parallel(job.id).coerceIn(1, config.maxParallel)
                     while (active.size < limit && pending.isNotEmpty()) {
@@ -114,7 +128,7 @@ class Runner(private val config: Config, private val store: Store) {
                 }
                 Thread.sleep(DISPATCH_POLL_MS)
             }
-            return true
+            return Dispatched.FINISHED
         } catch (e: ExecutionException) {
             // One command's failure to run fails the job, which must not leave its siblings running past it.
             running.forEach(::killTree)
@@ -398,3 +412,5 @@ internal fun Path.writeAtomically(text: String) {
     temp.writeText(text)
     Files.move(temp, this, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
 }
+
+private enum class Dispatched { FINISHED, CANCELLED, YIELDED }

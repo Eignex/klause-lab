@@ -27,10 +27,19 @@ import java.time.format.DateTimeFormatter
 data class CommandSpec(val cmd: String, val timeoutSec: Long? = null)
 
 @Serializable
-data class JobSpec(val name: String, val ref: String, val commands: List<CommandSpec>, val parallel: Int = 1)
+data class JobSpec(
+    val name: String,
+    val ref: String,
+    val commands: List<CommandSpec>,
+    val parallel: Int = 1,
+    val priority: Int = 0,
+)
 
 @Serializable
 data class ParallelSpec(val parallel: Int)
+
+@Serializable
+data class PrioritySpec(val priority: Int)
 
 @Serializable
 data class Created(val id: Long)
@@ -70,6 +79,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 spec.ref,
                 spec.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) },
                 spec.parallel,
+                spec.priority,
             )
             call.respond(HttpStatusCode.Created, Created(id))
         }
@@ -90,6 +100,20 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             requireParallel(spec.parallel, config)
             val found = store.setParallel(call.parameters["id"]!!.toLong(), spec.parallel)
             call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "parallel ${spec.parallel}" else "no such job")
+        }
+        post("/jobs/{id}/priority") {
+            val spec = call.receive<PrioritySpec>()
+            val found = store.setPriority(call.parameters["id"]!!.toLong(), spec.priority)
+            call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "priority ${spec.priority}" else "no such job")
+        }
+        // A running job stops starting commands and goes back to the queue once the running ones end.
+        post("/jobs/{id}/pause") {
+            val paused = store.setPaused(call.parameters["id"]!!.toLong(), true)
+            call.respond(if (paused) HttpStatusCode.OK else HttpStatusCode.Conflict, if (paused) "paused" else "no unfinished job")
+        }
+        post("/jobs/{id}/resume") {
+            val resumed = store.setPaused(call.parameters["id"]!!.toLong(), false)
+            call.respond(if (resumed) HttpStatusCode.OK else HttpStatusCode.Conflict, if (resumed) "resumed" else "no unfinished job")
         }
         get("/jobs/{id}/files") {
             val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile()
@@ -149,7 +173,9 @@ private fun page(jobs: List<Job>): String = buildString {
         val current = job.commands.firstOrNull { it.status == Status.RUNNING }
         append("<tr><td><a href=\"/jobs/${job.id}\">${job.id}</a></td><td>${esc(job.name)}</td>")
         append("<td><code>${esc(job.ref)}${job.sha?.let { " " + it.take(9) } ?: ""}</code></td>")
-        append("<td class=\"${job.status}\">${job.status}${job.error?.let { "<br><small>${esc(it)}</small>" } ?: ""}</td>")
+        val flags = listOfNotNull("paused".takeIf { job.paused }, "priority ${job.priority}".takeIf { job.priority != 0 })
+        val note = (flags + listOfNotNull(job.error)).joinToString("<br>") { "<small>${esc(it)}</small>" }
+        append("<td class=\"${job.status}\">${job.status}${if (note.isEmpty()) "" else "<br>$note"}</td>")
         append("<td>${job.done}/${job.commands.size}${if (job.parallel > 1) " ×${job.parallel}" else ""}${if (job.failed > 0) "<br><small>${job.failed} failed</small>" else ""}</td>")
         append("<td>")
         if (current != null) {
