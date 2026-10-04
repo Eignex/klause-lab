@@ -46,7 +46,14 @@ internal fun indexPage(
 }
 
 /** One job: its settings, controls while it is unfinished, and every command with its output. */
-internal fun jobPage(config: Config, job: Job, failedOnly: Boolean): String = buildString {
+internal fun jobPage(
+    config: Config,
+    job: Job,
+    failedOnly: Boolean,
+    arms: List<PlannedArm> = emptyList(),
+    cases: List<CaseResult> = emptyList(),
+    showCommands: Boolean = true,
+): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
     append(head("${job.id} ${job.name} · klause lab", live = active))
@@ -87,6 +94,13 @@ internal fun jobPage(config: Config, job: Job, failedOnly: Boolean): String = bu
         }
         append("</div>")
     }
+    if (job.experiment != null) append(experimentSection(config, job, arms, cases))
+    if (!showCommands) {
+        append("<p><a href=\"/jobs/${job.id}?commands\">every case's command</a></p></div>")
+        append(SCRIPT)
+        append("</body></html>")
+        return@buildString
+    }
     val commands = if (failedOnly) job.commands.filter { it.status == Status.FAILED } else job.commands
     append("<h2>Commands")
     if (failedOnly) {
@@ -112,6 +126,95 @@ internal fun jobPage(config: Config, job: Job, failedOnly: Boolean): String = bu
     append(SCRIPT)
     append("</body></html>")
 }
+
+/** An experiment's results: each arm's totals and score, the disagreements, and every problem across the arms. */
+private fun experimentSection(config: Config, job: Job, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
+    if (arms.isEmpty()) {
+        append("<p class=\"muted\">Not planned yet: the runner selects the problems and writes the cases when it sets the job up.</p>")
+        return@buildString
+    }
+    val labels = arms.map { it.arm.label }
+    val comparison = Compare.compare(labels, cases)
+    val seeds = cases.map { it.seed }.distinct().sortedBy { it ?: Long.MIN_VALUE }
+    val total = cases.groupBy { it.arm }
+    append("<h2>Arms <small>${cases.map { it.problem }.distinct().size} problems")
+    if (seeds.size > 1) append(" × ${seeds.size} seeds")
+    append(" · <a href=\"/experiments/${job.id}/cases.csv\">cases.csv</a></small></h2>")
+    append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
+    append("<th class=\"num\">proven</th><th class=\"num\">errors</th><th class=\"num\">score</th><th>vs ${esc(labels.first())}</th>")
+    append("<th>bench csv</th></tr>")
+    for ((planned, summary) in arms.zip(comparison.arms)) {
+        val commit = commitUrl(config.repoUrl, planned.sha)?.let { "<a href=\"$it\">${planned.sha.take(9)}</a>" } ?: planned.sha.take(9)
+        val versus = if (summary.label == labels.first()) "<span class=\"muted\">baseline</span>" else
+            "<span class=\"DONE\">${summary.wins} better</span> · <span class=\"FAILED\">${summary.losses} worse</span> · ${summary.ties} even"
+        append("<tr><td><b>${esc(summary.label)}</b><br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
+        append("<td><code>$commit</code></td><td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
+        append("<td class=\"num\">${summary.solved}</td><td class=\"num\">${summary.proven}</td>")
+        append("<td class=\"num\">${if (summary.errors > 0) "<span class=\"FAILED\">${summary.errors}</span>" else "0"}</td>")
+        append("<td class=\"num\">${"%.1f".format(summary.score)}</td><td>$versus</td><td>")
+        append(seeds.joinToString(" ") { seed ->
+            val name = if (seed == null) "csv" else "seed $seed"
+            "<a href=\"/experiments/${job.id}/bench.csv${query("arm" to summary.label, "seed" to seed?.toString())}\">$name</a>"
+        })
+        append("</td></tr>")
+    }
+    append("</table></div>")
+    if (comparison.disagreements.isNotEmpty()) {
+        append("<h2 class=\"FAILED\">Disagreements <small>${comparison.disagreements.size}</small></h2><ul class=\"error\">")
+        for (d in comparison.disagreements) append("<li><code>${esc(name(d.problem))}</code>: ${esc(d.reason)}</li>")
+        append("</ul>")
+    }
+    append(problemGrid(labels, cases))
+}
+
+/** One row per problem, one cell per arm with its outcome on each seed; the arm that scores best on a row is marked. */
+private fun problemGrid(labels: List<String>, cases: List<CaseResult>): String = buildString {
+    val byProblem = cases.groupBy { it.problem }
+    append("<h2>Problems <small><label><input type=\"checkbox\" id=\"differ\"> only where arms differ</label></small></h2>")
+    append("<div class=\"scroll\"><table class=\"grid\"><tr><th>problem</th>")
+    for (label in labels) append("<th>${esc(label)}</th>")
+    append("</tr>")
+    for ((problem, ofProblem) in byProblem) {
+        val outcomes = ofProblem.groupBy { it.arm }.mapValues { (_, cs) -> cs.sortedBy { it.seed ?: Long.MIN_VALUE } }
+        val verdicts = labels.map { label -> outcomes[label].orEmpty().map { verdict(Outcome.of(it.record), it.status) } }
+        val points = labels.associateWith { label ->
+            ofProblem.filter { it.arm == label }.sumOf { mine ->
+                val a = Outcome.of(mine.record) ?: return@sumOf 0.0
+                ofProblem.filter { it.arm != label && it.seed == mine.seed }.sumOf { other -> Outcome.of(other.record)?.let { Compare.points(a, it) } ?: 0.0 }
+            }
+        }
+        val best = points.values.maxOrNull()?.takeIf { top -> points.values.any { it < top } }
+        append("<tr data-differ=\"${verdicts.distinct().size > 1}\"><td><code>${esc(name(problem))}</code></td>")
+        for (label in labels) {
+            val cls = if (best != null && points[label] == best) " class=\"best\"" else ""
+            append("<td$cls>")
+            append(outcomes[label].orEmpty().joinToString("<br>") { case ->
+                val outcome = Outcome.of(case.record)
+                val time = outcome?.takeIf { it.rank > 0 }?.let { " <small class=\"muted\">${"%.2f".format(it.timeMs / 1000.0)}s</small>" }.orEmpty()
+                verdict(outcome, case.status) + time
+            })
+            append("</td>")
+        }
+        append("</tr>")
+    }
+    append("</table></div>")
+}
+
+/** One outcome in a word: the objective (starred when proven), sat, infeasible, unknown, or why there is none. */
+private fun verdict(outcome: Outcome?, status: Status): String = when {
+    outcome == null -> "<span class=\"${status.name}\">${status.name.lowercase()}</span>"
+    outcome.error -> "<span class=\"FAILED\">error</span>"
+    outcome.feasible == false -> "infeasible"
+    outcome.feasible == null -> "<span class=\"muted\">unknown</span>"
+    outcome.optimize && outcome.objective != null -> number(outcome.objective) + if (outcome.proven) "*" else ""
+    else -> "sat"
+}
+
+private fun number(value: Double) = if (value == Math.rint(value) && kotlin.math.abs(value) < 1e15) value.toLong().toString() else value.toString()
+
+private fun name(problem: Problem) = if (problem.suite.isEmpty()) problem.problem else "${problem.suite}/${problem.problem}"
+
+private fun describe(arm: Arm) = arm.values.toSortedMap().entries.joinToString(" ") { (k, v) -> "$k=$v" }
 
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
     append(head("$jobId files · klause lab", live = false))
@@ -329,6 +432,7 @@ button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:
 .chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
 .actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}.actions input{width:4em;font:inherit}
 dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0}dl.meta dt{color:var(--muted)}dl.meta dd{margin:0}
+table.grid td.best{background:color-mix(in srgb,var(--ok) 14%,transparent)}ul.error{color:var(--bad)}
 pre.error{color:var(--bad);white-space:pre-wrap;word-break:break-all;background:var(--soft);padding:8px}
 .pager{margin-top:12px}
 """
@@ -345,6 +449,11 @@ function applyFilter() {
   });
 }
 document.getElementById('q')?.addEventListener('input', applyFilter);
+function applyDiffer() {
+  const only = document.getElementById('differ')?.checked;
+  document.querySelectorAll('tr[data-differ]').forEach(function (row) { row.hidden = only && row.dataset.differ !== 'true'; });
+}
+document.addEventListener('change', function (e) { if (e.target.id === 'differ') applyDiffer(); });
 document.querySelectorAll('[data-chip]').forEach(function (button) {
   button.addEventListener('click', function () {
     chip = button.dataset.chip;
@@ -373,6 +482,7 @@ async function refresh() {
       if (old) old.innerHTML = part.innerHTML;
     });
     applyFilter();
+    applyDiffer();
     if (!fresh.body.hasAttribute('data-refresh')) clearInterval(timer);
   } catch (e) {}
 }

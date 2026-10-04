@@ -64,4 +64,24 @@ class PagesTest {
             assertContains(index, "/jobs/$queued")
         }
     }
+
+    @Test
+    fun `an experiment's page compares its arms problem by problem`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.database)
+        val spec = ExperimentSpec("ab", mapOf("suite" to "s"))
+        val id = store.create("ab", "main", emptyList(), experiment = spec)
+        val arms = listOf(PlannedArm(Arm("cp", emptyMap()), "abc"), PlannedArm(Arm("ls", emptyMap()), "abc"))
+        store.plan(id, arms, listOf(Problem("s", "p")), Experiments.cases(1, 2, emptyList()), listOf("true" to 1L, "true" to 1L))
+        store.caseRecord(id, 0, """{"kind":"optimize","feasible":true,"objective":3,"proven":true,"timeToBestMs":5,"budgetMs":1000}""")
+        store.caseRecord(id, 1, """{"kind":"optimize","feasible":true,"objective":9,"timeToBestMs":5,"budgetMs":1000}""")
+        testApplication {
+            application { api(config, store, host) }
+
+            val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+
+            assertContains(page, "<td class=\"best\">3*")
+            assertContains(page, "1 worse")
+        }
+    }
 }

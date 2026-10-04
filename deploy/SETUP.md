@@ -42,6 +42,22 @@ back, in an order rotated per problem, so drift and pauses spread evenly over th
 bench result cache is off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
 /experiments/<id>/cases`.
 
+An experiment's page (its job id) compares the arms:
+
+- each arm's commit, cases done, solved, proven (optima and infeasibility) and errors;
+- a pairwise score by the MiniZinc Challenge rule `output/compare.sh` uses: per problem and seed, solved beats
+  unsolved, proven beats unproven, then the better objective, and equal outcomes split the point by time;
+- how each arm did against the first, problem by problem;
+- disagreements first: one arm proving infeasibility where another solves, different proven optima, or a solution
+  better than a proven optimum;
+- every problem across the arms, the best cell marked, optionally only the rows where arms differ.
+
+`lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as the bench writes
+`output/<config>.csv`, for `bench credit` and the `output/` scripts. `lab import <job>` turns the bench records an older
+job collected (each directory directly under its `collected/klause-bench/output/`, records of the job's own commit
+only) into a finished experiment with one arm per directory. Bench records carry no suite, so imported problems are
+named by problem alone.
+
 An experiment whose cases could take more than `LAB_MAX_EXPERIMENT_HOURS` (default 24), each using its whole budget,
 fails at planning with the count and the estimate; resubmit with `"confirm": true` to run it. The queue,
 priorities, pause, `parallel` and cancel work on an experiment as on any job, one case at a time.
@@ -193,6 +209,9 @@ is unfinished.
 | `POST` | `/experiments` | an experiment spec (above) → `{"id"}`; the job it queues plans its cases when it starts |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
+| `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
+| `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
+| `POST` | `/jobs/{id}/import` | an ended job's collected bench records as a new, finished experiment → `{"id"}` |
 | `GET` | `/health` | queue counts and the koblas report |
 
 A browser (`Accept: text/html`) gets a page for `/jobs/{id}` and `/jobs/{id}/files`; `?json` gets the data instead.

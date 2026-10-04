@@ -118,11 +118,33 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
+        get("/experiments/{id}/cases.csv") {
+            call.respondText(Results.casesCsv(store.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
+        }
+        get("/experiments/{id}/bench.csv") {
+            val arm = requireNotNull(call.parameters["arm"]) { "arm is required" }
+            val seed = call.parameters["seed"]?.toLong()
+            call.respondText(Results.benchCsv(store.cases(call.parameters["id"]!!.toLong()), arm, seed), ContentType.Text.CSV)
+        }
+        // The records an older job collected, made into a finished experiment the comparison reads.
+        post("/jobs/{id}/import") {
+            val job = store.job(call.parameters["id"]!!.toLong())
+            if (job == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(HttpStatusCode.Created, Created(Results.import(config, store, job)))
+        }
         get("/jobs/{id}") {
             val job = store.job(call.parameters["id"]!!.toLong())
             when {
                 job == null -> call.respond(HttpStatusCode.NotFound, "no such job")
-                call.wantsHtml() -> call.respondText(jobPage(config, job, "failed" in call.parameters), ContentType.Text.Html)
+                call.wantsHtml() -> {
+                    val experiment = job.experiment != null
+                    val page = jobPage(
+                        config, job, "failed" in call.parameters,
+                        arms = if (experiment) store.arms(job.id) else emptyList(),
+                        cases = if (experiment) store.cases(job.id) else emptyList(),
+                        showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
+                    )
+                    call.respondText(page, ContentType.Text.Html)
+                }
                 else -> call.respond(job)
             }
         }

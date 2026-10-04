@@ -191,37 +191,77 @@ class Store(file: Path) {
     @Synchronized
     fun plan(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) {
         require(cases.size == commands.size) { "a command per case" }
-        transaction {
-            arms.forEachIndexed { index, planned ->
-                update(
-                    "INSERT INTO arms (job_id, idx, label, arm, sha) VALUES (?, ?, ?, ?, ?)",
-                    jobId, index, planned.arm.label, Json.encodeToString(planned.arm), planned.sha,
-                )
-            }
-            connection.prepareStatement("INSERT INTO problems (job_id, idx, problem) VALUES (?, ?, ?)").use { statement ->
-                problems.forEachIndexed { index, problem ->
-                    statement.setLong(1, jobId)
-                    statement.setInt(2, index)
-                    statement.setString(3, Json.encodeToString(problem))
-                    statement.addBatch()
-                }
-                statement.executeBatch()
-            }
-            connection.prepareStatement(
-                "INSERT INTO cases (job_id, idx, problem_idx, arm_idx, seed) VALUES (?, ?, ?, ?, ?)",
-            ).use { statement ->
-                cases.forEachIndexed { index, case ->
-                    statement.setLong(1, jobId)
-                    statement.setInt(2, index)
-                    statement.setInt(3, case.problem)
-                    statement.setInt(4, case.arm)
-                    statement.setObject(5, case.seed)
-                    statement.addBatch()
-                }
-                statement.executeBatch()
-            }
-            insertCommands(jobId, commands)
+        transaction { planRows(jobId, arms, problems, cases, commands) }
+    }
+
+    /**
+     * Turn records an earlier job left into a finished experiment: a new job of [name] at [sha], whose cases are
+     * [records], each already done with its record kept, so the experiment views compare them like any other.
+     */
+    @Synchronized
+    fun importExperiment(
+        name: String,
+        ref: String,
+        sha: String,
+        spec: ExperimentSpec,
+        arms: List<PlannedArm>,
+        problems: List<Problem>,
+        records: List<Pair<Case, String>>,
+        sources: List<String>,
+    ): Long = transaction {
+        val id = connection.prepareStatement(
+            "INSERT INTO jobs (name, ref, sha, status, setup_done, created_at, started_at, finished_at, experiment) " +
+                "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
+            java.sql.Statement.RETURN_GENERATED_KEYS,
+        ).use {
+            val at = now()
+            it.setString(1, name)
+            it.setString(2, ref)
+            it.setString(3, sha)
+            it.setString(4, Status.DONE.name)
+            it.setLong(5, at)
+            it.setLong(6, at)
+            it.setLong(7, at)
+            it.setString(8, Json.encodeToString(spec))
+            it.executeUpdate()
+            it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
+        planRows(id, arms, problems, records.map { it.first }, sources.map { it to 0L })
+        update("UPDATE commands SET status = ? WHERE job_id = ?", Status.DONE.name, id)
+        records.forEachIndexed { index, (_, record) -> update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, id, index) }
+        id
+    }
+
+    private fun planRows(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) {
+        arms.forEachIndexed { index, planned ->
+            update(
+                "INSERT INTO arms (job_id, idx, label, arm, sha) VALUES (?, ?, ?, ?, ?)",
+                jobId, index, planned.arm.label, Json.encodeToString(planned.arm), planned.sha,
+            )
+        }
+        connection.prepareStatement("INSERT INTO problems (job_id, idx, problem) VALUES (?, ?, ?)").use { statement ->
+            problems.forEachIndexed { index, problem ->
+                statement.setLong(1, jobId)
+                statement.setInt(2, index)
+                statement.setString(3, Json.encodeToString(problem))
+                statement.addBatch()
+            }
+            statement.executeBatch()
+        }
+        connection.prepareStatement(
+            "INSERT INTO cases (job_id, idx, problem_idx, arm_idx, seed) VALUES (?, ?, ?, ?, ?)",
+        ).use { statement ->
+            cases.forEachIndexed { index, case ->
+                statement.setLong(1, jobId)
+                statement.setInt(2, index)
+                statement.setInt(3, case.problem)
+                statement.setInt(4, case.arm)
+                statement.setObject(5, case.seed)
+                statement.addBatch()
+            }
+            statement.executeBatch()
+        }
+        insertCommands(jobId, commands)
     }
 
     @Synchronized
