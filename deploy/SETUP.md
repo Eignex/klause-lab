@@ -120,8 +120,9 @@ request open until its job ends (`GET /jobs/<id>/wait`), so a waiting client mak
 background to be told when a job is done.
 
 `lab schedule <name> <ref> <file> <interval-sec> [parallel] [priority]` keeps a job template that the runner checks
-between jobs at most every interval: when `<ref>` resolves to a commit other than the last one it queued, and that
-run has ended, it queues a run pinned to the new commit, named `<name>@<sha>`. An unchanged ref queues nothing.
+every interval, also while a job runs: when `<ref>` resolves to a commit other than the last one it queued, and that
+run has ended, it queues a run pinned to the new commit, named `<name>@<sha>`, which then waits its turn by priority
+like any other job. An unchanged ref queues nothing.
 `lab schedules` lists them with the last commit and job; `lab unschedule <id>` removes one.
 
 ```sh
