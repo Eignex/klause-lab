@@ -119,6 +119,11 @@ queue with its worktree and finished commands kept, resuming at its next command
 request open until its job ends (`GET /jobs/<id>/wait`), so a waiting client makes no repeated requests; run it in the
 background to be told when a job is done.
 
+`lab schedule <name> <ref> <file> <interval-sec> [parallel] [priority]` keeps a job template that the runner checks
+between jobs at most every interval: when `<ref>` resolves to a commit other than the last one it queued, and that
+run has ended, it queues a run pinned to the new commit, named `<name>@<sha>`. An unchanged ref queues nothing.
+`lab schedules` lists them with the last commit and job; `lab unschedule <id>` removes one.
+
 ```sh
 cat > sweep.txt <<'EOF'
 ./gradlew :klause-bench:bench --max-workers=1 --args="solve suite=mzn-bench per-family=1 max=50 seed=1"

@@ -6,6 +6,8 @@
 #   lab priority <id> <n>                                    reorder a queued job; a running one yields to a higher one
 #   lab pause <id> | lab resume <id>                         hold a job; a running one stops between its commands
 #   lab wait <id>...                                         block until every job given has ended; prints each end
+#   lab schedule <name> <ref> <commands-file> <interval-sec> [parallel] [priority]   rerun on every new commit of <ref>
+#   lab schedules | lab unschedule <id>
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> <n> [out|err]
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
@@ -42,6 +44,15 @@ wait)
       case "$status" in DONE | FAILED | CANCELLED) echo -e "$id\t$status"; break ;; esac
     done
   done ;;
+schedule)
+  jq -n --arg name "$1" --arg ref "$2" --argjson interval "$4" --argjson parallel "${5:-1}" --argjson priority "${6:-0}" \
+    --rawfile body "$3" '{
+      name: $name, ref: $ref, intervalSec: $interval, parallel: $parallel, priority: $priority,
+      commands: [$body | split("\n")[] | select(test("^\\s*(#|$)") | not) | {cmd: .}]
+    }' | curl -fsS -H 'Content-Type: application/json' --data-binary @- "$url/schedules"; echo ;;
+schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
+      "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv' ;;
+unschedule) curl -sS -X POST "$url/schedules/$1/delete"; echo ;;
 pause) curl -sS -X POST "$url/jobs/$1/pause"; echo ;;
 resume) curl -sS -X POST "$url/jobs/$1/resume"; echo ;;
 tail) curl -fsS "$url/jobs/$1/files/$2.${3:-out}?tail=${TAIL_BYTES:-8000}" ;;

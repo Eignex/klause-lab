@@ -1,6 +1,8 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
@@ -49,6 +51,24 @@ data class Job(
 enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
 
 /**
+ * A job queued again whenever [ref] moves: between jobs the runner checks it at most every [intervalSec], and queues a
+ * run pinned to the commit the ref resolves to when that commit is not [lastSha] and the previous run has ended.
+ */
+@Serializable
+data class Schedule(
+    val id: Long,
+    val name: String,
+    val ref: String,
+    val commands: List<CommandSpec>,
+    val parallel: Int,
+    val priority: Int,
+    val intervalSec: Long,
+    val lastSha: String? = null,
+    val lastJob: Long? = null,
+    val checkedAt: Long? = null,
+)
+
+/**
  * The job queue, persisted in SQLite so that neither a crashed runner nor a reboot loses queued or finished work.
  * Every state change is one transaction; WAL mode lets the API read while the runner writes.
  */
@@ -75,6 +95,12 @@ class Store(file: Path) {
                     job_id INTEGER NOT NULL, idx INTEGER NOT NULL, cmd TEXT NOT NULL, timeout_sec INTEGER NOT NULL,
                     status TEXT NOT NULL, exit_code INTEGER, started_at INTEGER, finished_at INTEGER,
                     PRIMARY KEY (job_id, idx))""",
+            )
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL, commands TEXT NOT NULL,
+                    parallel INTEGER NOT NULL, priority INTEGER NOT NULL, interval_sec INTEGER NOT NULL,
+                    last_sha TEXT, last_job INTEGER, checked_at INTEGER)""",
             )
             // A database created before the column existed gains it here; every older job ran serially.
             val columns = it.executeQuery("PRAGMA table_info(jobs)").use { rows ->
@@ -210,6 +236,53 @@ class Store(file: Path) {
     }
 
     /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
+    @Synchronized
+    fun createSchedule(
+        name: String,
+        ref: String,
+        commands: List<CommandSpec>,
+        parallel: Int,
+        priority: Int,
+        intervalSec: Long,
+    ): Long = connection.prepareStatement(
+        "INSERT INTO schedules (name, ref, commands, parallel, priority, interval_sec) VALUES (?, ?, ?, ?, ?, ?)",
+        java.sql.Statement.RETURN_GENERATED_KEYS,
+    ).use {
+        it.setString(1, name)
+        it.setString(2, ref)
+        it.setString(3, Json.encodeToString(commands))
+        it.setInt(4, parallel)
+        it.setInt(5, priority)
+        it.setLong(6, intervalSec)
+        it.executeUpdate()
+        it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
+    }
+
+    @Synchronized
+    fun schedules(): List<Schedule> = connection.prepareStatement("SELECT * FROM schedules ORDER BY id").use { statement ->
+        statement.executeQuery().use { rows ->
+            generateSequence {
+                if (!rows.next()) return@generateSequence null
+                Schedule(
+                    rows.getLong("id"), rows.getString("name"), rows.getString("ref"),
+                    Json.decodeFromString(rows.getString("commands")), rows.getInt("parallel"), rows.getInt("priority"),
+                    rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
+                    rows.longOrNull("checked_at"),
+                )
+            }.toList()
+        }
+    }
+
+    @Synchronized
+    fun deleteSchedule(id: Long): Boolean = update("DELETE FROM schedules WHERE id = ?", id) == 1
+
+    @Synchronized
+    fun scheduleChecked(id: Long, at: Long) = update("UPDATE schedules SET checked_at = ? WHERE id = ?", at, id)
+
+    @Synchronized
+    fun scheduleRan(id: Long, sha: String, jobId: Long) =
+        update("UPDATE schedules SET last_sha = ?, last_job = ? WHERE id = ?", sha, jobId, id)
+
     @Synchronized
     fun setPriority(jobId: Long, priority: Int): Boolean =
         update("UPDATE jobs SET priority = ? WHERE id = ?", priority, jobId) == 1

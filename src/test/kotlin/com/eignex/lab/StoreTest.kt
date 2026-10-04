@@ -149,4 +149,18 @@ class StoreTest {
 
         assertEquals(listOf(Status.DONE, Status.QUEUED), resumed?.commands?.map { it.status })
     }
+
+    @Test
+    fun `a schedule keeps its commands and remembers the commit it last queued`() {
+        val store = store()
+        val id = store.createSchedule("status", "main", listOf(CommandSpec("true", 5L)), 2, -1, 3600)
+        store.scheduleRan(id, "abc123", 7L)
+
+        val schedule = store.schedules().single()
+
+        assertEquals(
+            listOf(listOf(CommandSpec("true", 5L)), "abc123", 7L, -1),
+            listOf(schedule.commands, schedule.lastSha, schedule.lastJob, schedule.priority),
+        )
+    }
 }

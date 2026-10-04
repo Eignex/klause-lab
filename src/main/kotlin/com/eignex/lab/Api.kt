@@ -43,6 +43,16 @@ data class ParallelSpec(val parallel: Int)
 data class PrioritySpec(val priority: Int)
 
 @Serializable
+data class ScheduleSpec(
+    val name: String,
+    val ref: String,
+    val commands: List<CommandSpec>,
+    val parallel: Int = 1,
+    val priority: Int = 0,
+    val intervalSec: Long = 3600,
+)
+
+@Serializable
 data class Created(val id: Long)
 
 @Serializable
@@ -135,6 +145,20 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val resumed = store.setPaused(call.parameters["id"]!!.toLong(), false)
             call.respond(if (resumed) HttpStatusCode.OK else HttpStatusCode.Conflict, if (resumed) "resumed" else "no unfinished job")
         }
+        post("/schedules") {
+            val spec = call.receive<ScheduleSpec>()
+            require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
+            require(spec.commands.isNotEmpty()) { "at least one command is required" }
+            require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
+            requireParallel(spec.parallel, config)
+            val id = store.createSchedule(spec.name, spec.ref, spec.commands, spec.parallel, spec.priority, spec.intervalSec)
+            call.respond(HttpStatusCode.Created, Created(id))
+        }
+        get("/schedules") { call.respond(store.schedules()) }
+        post("/schedules/{id}/delete") {
+            val deleted = store.deleteSchedule(call.parameters["id"]!!.toLong())
+            call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")
+        }
         get("/jobs/{id}/files") {
             val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile()
             val files = root.walkTopDown().filter { it.isFile }.map { FileEntry(it.relativeTo(root).path, it.length()) }.sortedBy { it.path }.toList()
@@ -158,6 +182,7 @@ private val ENDED = setOf(Status.DONE, Status.FAILED, Status.CANCELLED)
 private const val DEFAULT_WAIT_SEC = 600L
 private const val MAX_WAIT_SEC = 3600L
 private const val WAIT_POLL_MS = 2000L
+private const val MIN_SCHEDULE_SEC = 60L
 
 private fun requireParallel(parallel: Int, config: Config) =
     require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }

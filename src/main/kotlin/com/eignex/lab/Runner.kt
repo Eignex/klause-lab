@@ -42,6 +42,7 @@ class Runner(private val config: Config, private val store: Store) {
         while (true) {
             // Only between jobs: an update restarts the runner, which would cut a command off mid-run.
             updater.maybeUpdate()
+            runCatching { enqueueScheduled() }.onFailure { println("schedules: ${it.message}") }
             if (!disk.allowsWork()) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
@@ -136,6 +137,30 @@ class Runner(private val config: Config, private val store: Store) {
         } finally {
             pool.shutdown()
             pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
+        }
+    }
+
+    /**
+     * Queue a run of each due schedule whose ref has moved since its last run, pinned to the commit it resolves to, so
+     * the job records exactly what it ran. A schedule whose ref has not moved queues nothing, and one whose previous run
+     * has not ended waits for it.
+     */
+    private fun enqueueScheduled() {
+        val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
+        if (due.isEmpty()) return
+        if (!config.mirror.exists()) capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+        capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+        for (schedule in due) {
+            store.scheduleChecked(schedule.id, now())
+            if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
+            val sha = runCatching {
+                capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}")
+            }.getOrNull() ?: continue
+            if (sha == schedule.lastSha) continue
+            val commands = schedule.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) }
+            val id = store.create("${schedule.name}@${sha.take(9)}", sha, commands, schedule.parallel, schedule.priority)
+            store.scheduleRan(schedule.id, sha, id)
+            println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
     }
 
