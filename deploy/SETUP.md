@@ -35,7 +35,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
-- `parallel`, `priority` and `confirm` as below.
+- `parallel` (cases at once; unset, the lab's `LAB_MAX_PARALLEL`), `priority` and `confirm` as below.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
@@ -126,7 +126,7 @@ A case runs `klause-bench solve-one` in its arm's worktree, with this environmen
 
 | variable | value |
 | --- | --- |
-| `KLAUSE_CLI_OPTS` | `LAB_SOLVE_JAVA_OPTS`, default `-Xmx4g -XX:ActiveProcessorCount=1 -XX:+UseSerialGC` |
+| `KLAUSE_CLI_OPTS` | `LAB_SOLVE_JAVA_OPTS` (default `-Xmx3g -XX:+UseSerialGC`) plus `-XX:ActiveProcessorCount=<the case's cores>` |
 | `JOB_DIR` | the job's output directory; the case writes its record under `cases/<n>/` |
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
@@ -135,11 +135,16 @@ Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output a
 rest still run, the job ends DONE, and the failures are counted on it. FAILED means the experiment itself could not
 run, such as a failed checkout, build or selection, or a plan over the size limit.
 
-An experiment runs one case at a time unless its spec asks for more: `parallel` runs up to that many at once, in
-order, capped by `LAB_MAX_PARALLEL` (default 4). `deploy/lab parallel <id> <n>` changes it while the experiment
-runs: raising it starts more cases at once, lowering it starts no more until fewer than `n` run, and never stops a
-running one. Setup always runs alone. Each solve holds its own heap (`-Xmx4g` by default), so keep `parallel` times
-that within the machine's memory.
+Cases run in order within two limits. A case holds as many cores as its arm's `processors` (one without), and the
+running cases together hold at most `LAB_CORES` (default: the machine's cores less two, for the JVMs around the
+solves and the machine). Each solve sees exactly its cores (`-XX:ActiveProcessorCount`), so a portfolio sizes its
+threads to them. A case too big for the cores left waits for room rather than letting later ones pass it, and an arm
+asking for more processors than `LAB_CORES` is refused at submit. On top of that, at most `parallel` cases run at
+once: the spec's, or `LAB_MAX_PARALLEL` (default 6) when it sets none, and never more than that. Memory is what
+bounds this one: each solve holds its own heap (`-Xmx3g` by default), so keep `LAB_MAX_PARALLEL` times that within
+the machine's memory. `deploy/lab parallel <id> <n>` changes an experiment's limit while it runs: raising it starts
+more cases at once, lowering it starts no more until fewer than `n` run, and never stops a running one. Setup always
+runs alone.
 
 `LAB_SHARED_PATHS` names worktree directories every job shares, by default `klause-bench/build/bench-cache`. Cases
 run with the bench result cache off, so it serves only the bench's own tooling.
