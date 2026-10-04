@@ -23,7 +23,8 @@ restart_services() {
   case "$(uname -s)" in
   Darwin)
     local pids
-    pids="$(pgrep -f 'com\.eignex\.lab\.MainKt (api|runner)$' || true)"
+    # -a: BSD pgrep leaves out its own ancestors, and the runner is one when its self-update runs this.
+    pids="$(pgrep -af 'com\.eignex\.lab\.MainKt (api|runner)$' || true)"
     [[ -n "$pids" ]] && kill $pids
     ;;
   Linux) systemctl --user restart klause-lab-api klause-lab-runner ;;
