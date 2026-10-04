@@ -107,6 +107,17 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             )
             call.respond(HttpStatusCode.Created, Created(id))
         }
+        // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
+        post("/experiments") {
+            val spec = call.receive<ExperimentSpec>()
+            Experiments.validate(spec, config.maxParallel)
+            val arms = Experiments.arms(spec)
+            for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
+            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel, spec.priority, spec)
+            call.respond(HttpStatusCode.Created, Created(id))
+        }
+        get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
+        get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
         get("/jobs/{id}") {
             val job = store.job(call.parameters["id"]!!.toLong())
             when {

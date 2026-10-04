@@ -1,6 +1,7 @@
 # klause lab setup
 
-An experiment server for klause. A job names a git ref and a list of shell commands. The server checks the ref out
+An experiment server for klause. An experiment (below) solves a selection of problems under several
+configurations, one problem per case. A plain job names a git ref and a list of shell commands. The server checks the ref out
 into a fresh worktree, builds `klause-cli`, and runs the commands one at a time, one job at a time. It serves the
 queue and live output over HTTP.
 
@@ -8,6 +9,42 @@ It runs on macOS or Linux. Both services log the koblas backend at startup: the 
 it finds. They refuse to start (exit 78) unless koblas runs its Vector API engine, which is what klause's Level 1
 calls use, so no timing comes from the scalar fallback. Host BLAS serves only Level 2 and 3, which klause does not
 call, so it is reported and not required. `klause-lab check` prints the report and does nothing else.
+
+## Experiments
+
+An experiment runs one selection of problems under every configuration it names, one problem per case. `lab run
+<experiment.json>` queues one:
+
+```json
+{
+  "name": "restarts-ab",
+  "problems": { "suite": "xcsp3-cop,mzn-bench", "kind": "cop", "per-family": "2", "max": "400", "seed": "1" },
+  "base": { "ref": "main", "engine": "cp", "timeout": "30000" },
+  "grid": { "ref": ["main", "fix/x"], "param.restarts": ["luby", "geometric"] },
+  "seeds": [1, 2, 3],
+  "parallel": 4
+}
+```
+
+- `problems` are `klause-bench select` filters: `suite` (required), `kind`, `category`, `tag`, `name`,
+  `per-family`, `max`, `seed`, `balance`.
+- Each entry of `configs` (default: one empty config) is merged over `base`, then crossed with every combination of
+  `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 10000), `backend`, `engine`,
+  `processors`, `lp`, `presolve`, `fixed`, and `param.<name>` for `--param <name>=<value>`. An arm without a `label` is
+  named by the values that set it apart.
+- `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
+- `parallel`, `priority` and `confirm` as below.
+
+The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
+worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
+command per case: a `klause-bench solve-one` of one problem in one arm's worktree. Every arm of a problem runs back to
+back, in an order rotated per problem, so drift and pauses spread evenly over the arms. A case always solves (the
+bench result cache is off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
+/experiments/<id>/cases`.
+
+An experiment whose cases could take more than `LAB_MAX_EXPERIMENT_HOURS` (default 24), each using its whole budget,
+fails at planning with the count and the estimate; resubmit with `"confirm": true` to run it. The queue,
+priorities, pause, `parallel` and cancel work on an experiment as on any job, one case at a time.
 
 ## Crash safety
 
@@ -153,6 +190,9 @@ is unfinished.
 | `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its command tree killed |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id"}`; the job it queues plans its cases when it starts |
+| `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
+| `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/health` | queue counts and the koblas report |
 
 A browser (`Accept: text/html`) gets a page for `/jobs/{id}` and `/jobs/{id}/files`; `?json` gets the data instead.

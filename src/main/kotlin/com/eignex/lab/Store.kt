@@ -3,6 +3,7 @@ package com.eignex.lab
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
@@ -42,6 +43,8 @@ data class Job(
     val priority: Int = 0,
     /** A paused job is not started, and a running one stops starting commands and goes back to the queue. */
     val paused: Boolean = false,
+    /** Set for an experiment, whose commands the runner writes from it when it plans the job. */
+    val experiment: ExperimentSpec? = null,
     val commands: List<Command> = emptyList(),
 ) {
     val done: Int get() = commands.count { it.status == Status.DONE || it.status == Status.FAILED }
@@ -49,6 +52,21 @@ data class Job(
 }
 
 enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
+
+/** An experiment arm as planned: its configuration and the commit its ref resolved to. */
+@Serializable
+data class PlannedArm(val arm: Arm, val sha: String)
+
+/** One case of an experiment, with the record its `solve-one` wrote once it ran. */
+@Serializable
+data class CaseResult(
+    val index: Int,
+    val status: Status,
+    val problem: Problem,
+    val arm: String,
+    val seed: Long? = null,
+    val record: JsonElement? = null,
+)
 
 /**
  * A job queued again whenever [ref] moves: between jobs the runner checks it at most every [intervalSec], and queues a
@@ -109,6 +127,21 @@ class Store(file: Path) {
             if ("parallel" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN parallel INTEGER NOT NULL DEFAULT 1")
             if ("priority" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
             if ("paused" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
+            if ("experiment" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN experiment TEXT")
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS arms (
+                    job_id INTEGER NOT NULL, idx INTEGER NOT NULL, label TEXT NOT NULL, arm TEXT NOT NULL,
+                    sha TEXT NOT NULL, PRIMARY KEY (job_id, idx))""",
+            )
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS problems (
+                    job_id INTEGER NOT NULL, idx INTEGER NOT NULL, problem TEXT NOT NULL, PRIMARY KEY (job_id, idx))""",
+            )
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS cases (
+                    job_id INTEGER NOT NULL, idx INTEGER NOT NULL, problem_idx INTEGER NOT NULL,
+                    arm_idx INTEGER NOT NULL, seed INTEGER, record TEXT, PRIMARY KEY (job_id, idx))""",
+            )
         }
     }
 
@@ -119,9 +152,10 @@ class Store(file: Path) {
         commands: List<Pair<String, Long>>,
         parallel: Int = 1,
         priority: Int = 0,
+        experiment: ExperimentSpec? = null,
     ): Long = transaction {
         val id = connection.prepareStatement(
-            "INSERT INTO jobs (name, ref, status, created_at, parallel, priority) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, ref, status, created_at, parallel, priority, experiment) VALUES (?, ?, ?, ?, ?, ?, ?)",
             java.sql.Statement.RETURN_GENERATED_KEYS,
         ).use {
             it.setString(1, name)
@@ -130,23 +164,101 @@ class Store(file: Path) {
             it.setLong(4, now())
             it.setInt(5, parallel)
             it.setInt(6, priority)
+            it.setString(7, experiment?.let { spec -> Json.encodeToString(spec) })
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
-        connection.prepareStatement(
-            "INSERT INTO commands (job_id, idx, cmd, timeout_sec, status) VALUES (?, ?, ?, ?, ?)",
-        ).use { statement ->
-            commands.forEachIndexed { index, (cmd, timeout) ->
-                statement.setLong(1, id)
-                statement.setInt(2, index)
-                statement.setString(3, cmd)
-                statement.setLong(4, timeout)
-                statement.setString(5, Status.QUEUED.name)
-                statement.addBatch()
-            }
-            statement.executeBatch()
-        }
+        insertCommands(id, commands)
         id
+    }
+
+    private fun insertCommands(jobId: Long, commands: List<Pair<String, Long>>) = connection.prepareStatement(
+        "INSERT INTO commands (job_id, idx, cmd, timeout_sec, status) VALUES (?, ?, ?, ?, ?)",
+    ).use { statement ->
+        commands.forEachIndexed { index, (cmd, timeout) ->
+            statement.setLong(1, jobId)
+            statement.setInt(2, index)
+            statement.setString(3, cmd)
+            statement.setLong(4, timeout)
+            statement.setString(5, Status.QUEUED.name)
+            statement.addBatch()
+        }
+        statement.executeBatch()
+    }
+
+    /** Record an experiment's plan in one transaction: its arms, its problems, and a command per case, the case at
+     *  each command's index. A job with commands is planned. */
+    @Synchronized
+    fun plan(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) {
+        require(cases.size == commands.size) { "a command per case" }
+        transaction {
+            arms.forEachIndexed { index, planned ->
+                update(
+                    "INSERT INTO arms (job_id, idx, label, arm, sha) VALUES (?, ?, ?, ?, ?)",
+                    jobId, index, planned.arm.label, Json.encodeToString(planned.arm), planned.sha,
+                )
+            }
+            connection.prepareStatement("INSERT INTO problems (job_id, idx, problem) VALUES (?, ?, ?)").use { statement ->
+                problems.forEachIndexed { index, problem ->
+                    statement.setLong(1, jobId)
+                    statement.setInt(2, index)
+                    statement.setString(3, Json.encodeToString(problem))
+                    statement.addBatch()
+                }
+                statement.executeBatch()
+            }
+            connection.prepareStatement(
+                "INSERT INTO cases (job_id, idx, problem_idx, arm_idx, seed) VALUES (?, ?, ?, ?, ?)",
+            ).use { statement ->
+                cases.forEachIndexed { index, case ->
+                    statement.setLong(1, jobId)
+                    statement.setInt(2, index)
+                    statement.setInt(3, case.problem)
+                    statement.setInt(4, case.arm)
+                    statement.setObject(5, case.seed)
+                    statement.addBatch()
+                }
+                statement.executeBatch()
+            }
+            insertCommands(jobId, commands)
+        }
+    }
+
+    @Synchronized
+    fun arms(jobId: Long): List<PlannedArm> = connection.prepareStatement(
+        "SELECT arm, sha FROM arms WHERE job_id = ? ORDER BY idx",
+    ).use { statement ->
+        statement.setLong(1, jobId)
+        statement.executeQuery().use { rows ->
+            generateSequence { if (rows.next()) PlannedArm(Json.decodeFromString(rows.getString(1)), rows.getString(2)) else null }
+                .toList()
+        }
+    }
+
+    /** Keep the record a case's `solve-one` wrote. */
+    @Synchronized
+    fun caseRecord(jobId: Long, index: Int, record: String) =
+        update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, jobId, index)
+
+    /** Every case of an experiment in command order, with its problem, arm, status and record. */
+    @Synchronized
+    fun cases(jobId: Long): List<CaseResult> = connection.prepareStatement(
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, c.record FROM cases c
+           JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
+           JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
+           JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
+           WHERE c.job_id = ? ORDER BY c.idx""",
+    ).use { statement ->
+        statement.setLong(1, jobId)
+        statement.executeQuery().use { rows ->
+            generateSequence {
+                if (!rows.next()) return@generateSequence null
+                CaseResult(
+                    rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
+                    rows.getString(4), rows.longOrNull("seed"), rows.getString(6)?.let { Json.parseToJsonElement(it) },
+                )
+            }.toList()
+        }
     }
 
     /** The newest jobs first, older than [before] when given. A [name] keeps that name's jobs and the ones its
@@ -372,6 +484,7 @@ class Store(file: Path) {
         Status.valueOf(rows.getString("status")), rows.getInt("cancel_requested") == 1, rows.getInt("setup_done") == 1,
         rows.getLong("created_at"), rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
         rows.getString("error"), rows.getInt("parallel"), rows.getInt("priority"), rows.getInt("paused") == 1,
+        rows.getString("experiment")?.let { Json.decodeFromString<ExperimentSpec>(it) },
     )
 
     private fun update(sql: String, vararg values: Any?) = connection.prepareStatement(sql).use { statement ->

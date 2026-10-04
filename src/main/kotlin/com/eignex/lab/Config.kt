@@ -27,6 +27,8 @@ data class Config(
     val updateCheckSec: Long = env("LAB_UPDATE_CHECK_SEC", "300").toLong(),
     /** Free space the data directory's disk must have before the runner starts a job. */
     val minFreeBytes: Long = env("LAB_MIN_FREE_GB", "10").toLong() * BYTES_PER_GB,
+    /** The longest an experiment may take, every case using its whole budget, before it needs `"confirm": true`. */
+    val maxExperimentHours: Long = env("LAB_MAX_EXPERIMENT_HOURS", "24").toLong(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
     val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
     /** Worktree-relative paths copied into the job directory when a job ends, separated by `:`. */

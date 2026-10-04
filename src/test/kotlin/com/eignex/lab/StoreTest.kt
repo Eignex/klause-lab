@@ -194,4 +194,32 @@ class StoreTest {
 
         assertEquals(listOf(running, queued), store.active().map { it.id })
     }
+
+    @Test
+    fun `a planned experiment lists each case with its problem, arm and record`() {
+        val store = store()
+        val spec = ExperimentSpec("e", mapOf("suite" to "s"))
+        val id = store.create("e", "main", emptyList(), experiment = spec)
+        val arms = listOf(PlannedArm(Arm("a", emptyMap()), "sha-a"), PlannedArm(Arm("b", emptyMap()), "sha-b"))
+        val cases = Experiments.cases(problems = 1, arms = 2, seeds = emptyList())
+        store.plan(id, arms, listOf(Problem("s", "p")), cases, listOf("true" to 10L, "true" to 10L))
+        store.caseRecord(id, 1, """{"feasible":true}""")
+
+        val listed = store.cases(id)
+
+        assertEquals(
+            listOf(Triple("a", "p", false), Triple("b", "p", true)),
+            listed.map { Triple(it.arm, it.problem.problem, it.record != null) },
+        )
+    }
+
+    @Test
+    fun `an experiment job keeps its spec`() {
+        val store = store()
+        val spec = ExperimentSpec("e", mapOf("suite" to "s"), grid = mapOf("engine" to listOf("cp", "ls")))
+
+        val id = store.create("e", "main", emptyList(), experiment = spec)
+
+        assertEquals(spec, store.job(id)?.experiment)
+    }
 }

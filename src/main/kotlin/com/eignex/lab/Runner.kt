@@ -15,6 +15,7 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.isSymbolicLink
 import kotlin.io.path.writeText
+import kotlinx.serialization.json.Json
 
 /**
  * Works the queue one job at a time. Each job checks its ref out into a fresh worktree, builds klause-cli, and
@@ -30,6 +31,8 @@ class Runner(private val config: Config, private val store: Store) {
 
     @Volatile
     private var stopping = false
+
+    private val lenient = Json { ignoreUnknownKeys = true }
 
     /** Held over every git operation on the shared mirror, which the schedule thread and job setup both touch. */
     private val mirrorLock = Any()
@@ -68,6 +71,7 @@ class Runner(private val config: Config, private val store: Store) {
                 log(job.id, "job failed: ${e.message}")
                 store.cancelRemaining(job.id)
                 store.finish(job.id, Status.FAILED, e.message ?: e.toString())
+                runCatching { removeWorktree(job.id) }
             }
         }
     }
@@ -79,7 +83,7 @@ class Runner(private val config: Config, private val store: Store) {
         store.requeueInterrupted(claimed.id)
         var job = checkNotNull(store.job(claimed.id))
         if (!job.setupDone || !config.worktree(job.id).exists()) {
-            val sha = setup(job, dir)
+            val sha = if (job.experiment != null) setupExperiment(job, dir) else setup(job, dir)
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
@@ -121,7 +125,12 @@ class Runner(private val config: Config, private val store: Store) {
                 while (stopping) Thread.sleep(CANCEL_POLL_MS)
                 for (index in active.filterValues { it.isDone }.keys) {
                     val exit = active.remove(index)!!.get()
-                    if (exit == CANCELLED_EXIT) cancelled = true else store.commandFinished(job.id, index, exit)
+                    if (exit == CANCELLED_EXIT) {
+                        cancelled = true
+                    } else {
+                        store.commandFinished(job.id, index, exit)
+                        if (job.experiment != null) keepRecord(job.id, index, dir)
+                    }
                 }
                 // Each running command sees the request and kills its own tree; the job ends once they have.
                 if (!cancelled && store.cancelRequested(job.id)) cancelled = true
@@ -184,12 +193,8 @@ class Runner(private val config: Config, private val store: Store) {
         val log = dir.resolve("setup.log").toFile()
         log.writeText("")
         val sha = synchronized(mirrorLock) {
-            if (!config.mirror.exists()) {
-                sh(log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
-            }
-            sh(log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
-            val sha = runCatching { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(job.ref + "^{commit}")}") }
-                .getOrElse { error("unknown ref: ${job.ref} (not on origin; is it pushed?)") }
+            fetchMirror(log)
+            val sha = resolve(job.ref)
             removeWorktree(job.id)
             config.worktree(job.id).parent.createDirectories()
             sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(config.worktree(job.id).toString())} $sha")
@@ -201,6 +206,86 @@ class Runner(private val config: Config, private val store: Store) {
         dir.resolve("sha").writeAtomically(sha)
         return sha
     }
+
+    /**
+     * Set an experiment up: build every commit its arms name, each in its own worktree, and on the first setup plan
+     * it. Planning selects the problems with the bench at the first arm's commit, refuses a plan whose estimate is
+     * over [Config.maxExperimentHours] unless the spec confirms it, and writes a command per case. A setup after a
+     * crash or a yield only rebuilds, against the commits the plan recorded.
+     */
+    private fun setupExperiment(job: Job, dir: Path): String {
+        val spec = checkNotNull(job.experiment)
+        val log = dir.resolve("setup.log").toFile()
+        log.writeText("")
+        val planned = store.arms(job.id)
+        val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
+        val shas = synchronized(mirrorLock) {
+            fetchMirror(log)
+            planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
+        }
+        val primary = shas.getValue(arms.first().ref)
+        removeWorktree(job.id)
+        for (sha in shas.values.distinct()) {
+            val path = experimentWorktree(job.id, sha, primary)
+            synchronized(mirrorLock) {
+                path.parent.createDirectories()
+                sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
+            }
+            linkShared(path)
+            sh(log, path.toFile(),
+                "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+        }
+        if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, log)
+        dir.resolve("sha").writeAtomically(primary)
+        return primary
+    }
+
+    private fun plan(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, dir: Path, log: File) {
+        val worktree = experimentWorktree(job.id, primary, primary)
+        val selection = dir.resolve("selection.jsonl")
+        val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
+        sh(log, worktree.resolve("klause-bench").toFile(),
+            "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
+                "select ${Experiments.selectArgs(spec)} > ${quote(selection.toString())}")
+        val problems = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
+        require(problems.isNotEmpty()) { "the selection matched no problems" }
+        val cases = Experiments.cases(problems.size, arms.size, spec.seeds)
+        val hours = Experiments.estimateHours(cases, arms, spec.parallel)
+        require(spec.confirm || hours <= config.maxExperimentHours) {
+            "${cases.size} cases could take %.1f h at ×${spec.parallel}, over the ${config.maxExperimentHours} h limit; ".format(hours) +
+                "resubmit with \"confirm\": true"
+        }
+        val commands = cases.mapIndexed { index, case ->
+            val arm = arms[case.arm]
+            val path = experimentWorktree(job.id, shas.getValue(arm.ref), primary)
+            Experiments.command(path.toString(), problems[case.problem], arm, case.seed, index, config.corpusDir.toString()) to
+                Experiments.caseTimeoutSec(arm)
+        }
+        store.plan(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
+        log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
+    }
+
+    /** The worktree an experiment builds [sha] in: the job's own for its first arm's commit, a sibling for others. */
+    private fun experimentWorktree(jobId: Long, sha: String, primary: String): Path =
+        if (sha == primary) config.worktree(jobId) else config.worktree(jobId).resolveSibling("$jobId@${sha.take(SHA_DIR_LENGTH)}")
+
+    /** Keep the record a finished case wrote; a case that wrote none (it could not run) keeps none. */
+    private fun keepRecord(jobId: Long, index: Int, dir: Path) {
+        val record = dir.resolve(CASES).resolve(index.toString()).toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()
+        runCatching { record?.let { store.caseRecord(jobId, index, it.readText()) } }
+            .onFailure { log(jobId, "case $index: record not kept: ${it.message}") }
+    }
+
+    private fun fetchMirror(log: File) {
+        if (!config.mirror.exists()) {
+            sh(log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+        }
+        sh(log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+    }
+
+    private fun resolve(ref: String): String =
+        runCatching { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(ref + "^{commit}")}") }
+            .getOrElse { error("unknown ref: $ref (not on origin; is it pushed?)") }
 
     /**
      * Point each of [Config.sharedPaths] in the worktree at one directory every job uses. The bench result cache is
@@ -345,8 +430,15 @@ class Runner(private val config: Config, private val store: Store) {
         log(jobId, "job cancelled")
     }
 
+    /** Remove the job's worktree and, for an experiment, the ones it built other commits in. */
     private fun removeWorktree(jobId: Long) {
         val path = config.worktree(jobId)
+        val siblings = path.parent.toFile().listFiles { f -> f.name.startsWith("$jobId@") }.orEmpty()
+        for (sibling in siblings) removeTree(sibling.toPath())
+        removeTree(path)
+    }
+
+    private fun removeTree(path: Path) {
         // Unlink the shared directories first, so that nothing below can reach the data they point at.
         for (relative in config.sharedPaths) {
             val link = path.resolve(relative)
@@ -407,6 +499,8 @@ class Runner(private val config: Config, private val store: Store) {
         const val TIMEOUT_EXIT = -1001
         const val DISPATCH_POLL_MS = 100L
         const val COLLECTED = "collected"
+        const val CASES = "cases"
+        const val SHA_DIR_LENGTH = 12
         const val DOCKER_POLL_MS = 5000L
         const val SCHEDULE_POLL_MS = 30_000L
         const val DOCKER_LOG_EVERY_MS = 60_000L
