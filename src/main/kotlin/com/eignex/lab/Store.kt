@@ -69,15 +69,16 @@ data class CaseResult(
 )
 
 /**
- * A job queued again whenever [ref] moves: between jobs the runner checks it at most every [intervalSec], and queues a
- * run pinned to the commit the ref resolves to when that commit is not [lastSha] and the previous run has ended.
+ * An experiment queued again whenever [ref] moves: the runner checks it at most every [intervalSec], and queues a run
+ * with every arm at the commit the ref resolves to when that commit is not [lastSha] and the previous run has ended.
+ * A schedule from before experiments has no [experiment] and queues nothing.
  */
 @Serializable
 data class Schedule(
     val id: Long,
     val name: String,
     val ref: String,
-    val commands: List<CommandSpec>,
+    val experiment: ExperimentSpec?,
     val parallel: Int,
     val priority: Int,
     val intervalSec: Long,
@@ -128,6 +129,10 @@ class Store(file: Path) {
             if ("priority" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
             if ("paused" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
             if ("experiment" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN experiment TEXT")
+            val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { rows ->
+                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
+            }
+            if ("experiment" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN experiment TEXT")
             it.execute(
                 """CREATE TABLE IF NOT EXISTS arms (
                     job_id INTEGER NOT NULL, idx INTEGER NOT NULL, label TEXT NOT NULL, arm TEXT NOT NULL,
@@ -401,23 +406,16 @@ class Store(file: Path) {
 
     /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
     @Synchronized
-    fun createSchedule(
-        name: String,
-        ref: String,
-        commands: List<CommandSpec>,
-        parallel: Int,
-        priority: Int,
-        intervalSec: Long,
-    ): Long = connection.prepareStatement(
-        "INSERT INTO schedules (name, ref, commands, parallel, priority, interval_sec) VALUES (?, ?, ?, ?, ?, ?)",
+    fun createSchedule(name: String, ref: String, experiment: ExperimentSpec, intervalSec: Long): Long = connection.prepareStatement(
+        "INSERT INTO schedules (name, ref, commands, parallel, priority, interval_sec, experiment) VALUES (?, ?, '[]', ?, ?, ?, ?)",
         java.sql.Statement.RETURN_GENERATED_KEYS,
     ).use {
         it.setString(1, name)
         it.setString(2, ref)
-        it.setString(3, Json.encodeToString(commands))
-        it.setInt(4, parallel)
-        it.setInt(5, priority)
-        it.setLong(6, intervalSec)
+        it.setInt(3, experiment.parallel)
+        it.setInt(4, experiment.priority)
+        it.setLong(5, intervalSec)
+        it.setString(6, Json.encodeToString(experiment))
         it.executeUpdate()
         it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
     }
@@ -429,7 +427,8 @@ class Store(file: Path) {
                 if (!rows.next()) return@generateSequence null
                 Schedule(
                     rows.getLong("id"), rows.getString("name"), rows.getString("ref"),
-                    Json.decodeFromString(rows.getString("commands")), rows.getInt("parallel"), rows.getInt("priority"),
+                    rows.getString("experiment")?.let { Json.decodeFromString<ExperimentSpec>(it) },
+                    rows.getInt("parallel"), rows.getInt("priority"),
                     rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
                     rows.longOrNull("checked_at"),
                 )

@@ -82,8 +82,9 @@ class Runner(private val config: Config, private val store: Store) {
         claimed.commands.filter { it.status == Status.RUNNING }.forEach { killOrphan(dir.resolve("${it.index}.pid")) }
         store.requeueInterrupted(claimed.id)
         var job = checkNotNull(store.job(claimed.id))
+        requireNotNull(job.experiment) { "jobs of shell commands are no longer run: submit an experiment" }
         if (!job.setupDone || !config.worktree(job.id).exists()) {
-            val sha = if (job.experiment != null) setupExperiment(job, dir) else setup(job, dir)
+            val sha = setupExperiment(job, dir)
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
@@ -97,8 +98,6 @@ class Runner(private val config: Config, private val store: Store) {
             }
             Dispatched.FINISHED -> Unit
         }
-        // Collected before the job reads as done, so a client that sees DONE finds the results in place.
-        collect(job.id, dir)
         // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
         // that could not run, so a sweep with a few refused instances does not read as a broken job.
         store.finish(job.id, Status.DONE)
@@ -129,7 +128,7 @@ class Runner(private val config: Config, private val store: Store) {
                         cancelled = true
                     } else {
                         store.commandFinished(job.id, index, exit)
-                        if (job.experiment != null) keepRecord(job.id, index, dir)
+                        keepRecord(job.id, index, dir)
                     }
                 }
                 // Each running command sees the request and kills its own tree; the job ends once they have.
@@ -174,6 +173,7 @@ class Runner(private val config: Config, private val store: Store) {
         }
         for (schedule in due) {
             store.scheduleChecked(schedule.id, now())
+            if (schedule.experiment == null) continue
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
             val sha = runCatching {
                 synchronized(mirrorLock) {
@@ -181,30 +181,12 @@ class Runner(private val config: Config, private val store: Store) {
                 }
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha) continue
-            val commands = schedule.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) }
-            val id = store.create("${schedule.name}@${sha.take(9)}", sha, commands, schedule.parallel, schedule.priority)
+            val name = "${schedule.name}@${sha.take(9)}"
+            val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha))
+            val id = store.create(name, sha, emptyList(), spec.parallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
-    }
-
-    /** Fetch the ref into the mirror, check it out detached into the job's worktree, and build klause-cli there. */
-    private fun setup(job: Job, dir: Path): String {
-        val log = dir.resolve("setup.log").toFile()
-        log.writeText("")
-        val sha = synchronized(mirrorLock) {
-            fetchMirror(log)
-            val sha = resolve(job.ref)
-            removeWorktree(job.id)
-            config.worktree(job.id).parent.createDirectories()
-            sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(config.worktree(job.id).toString())} $sha")
-            sha
-        }
-        linkShared(config.worktree(job.id))
-        sh(log, config.worktree(job.id).toFile(),
-            "./gradlew :klause-cli:installJvmDist --max-workers=${config.gradleWorkers} -q")
-        dir.resolve("sha").writeAtomically(sha)
-        return sha
     }
 
     /**
@@ -242,12 +224,15 @@ class Runner(private val config: Config, private val store: Store) {
 
     private fun plan(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, dir: Path, log: File) {
         val worktree = experimentWorktree(job.id, primary, primary)
-        val selection = dir.resolve("selection.jsonl")
         val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
-        sh(log, worktree.resolve("klause-bench").toFile(),
-            "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
-                "select ${Experiments.selectArgs(spec)} > ${quote(selection.toString())}")
-        val problems = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
+        // Each selection is capped on its own; a problem two selections share is solved once.
+        val problems = spec.problems.withIndex().flatMap { (index, problemSelection) ->
+            val selection = dir.resolve("selection-$index.jsonl")
+            sh(log, worktree.resolve("klause-bench").toFile(),
+                "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
+                    "select ${Experiments.selectArgs(problemSelection)} > ${quote(selection.toString())}")
+            selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
+        }.distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems" }
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds)
         val hours = Experiments.estimateHours(cases, arms, spec.parallel)
@@ -303,7 +288,7 @@ class Runner(private val config: Config, private val store: Store) {
     }
 
     /**
-     * Run one command in the job's worktree. Output streams straight to disk; the exit code is written atomically
+     * Run one case's command. Output streams straight to disk; the exit code is written atomically
      * once the process ends, so a file named `<n>.exit` always holds a complete result. The whole process tree is
      * killed on timeout or cancellation.
      */
@@ -314,10 +299,7 @@ class Runner(private val config: Config, private val store: Store) {
             .redirectOutput(dir.resolve("${command.index}.out").toFile())
             .redirectError(dir.resolve("${command.index}.err").toFile())
         builder.environment().apply {
-            put("KLAUSE_WORKTREE", work.absolutePath)
-            put("KLAUSE_CLI", "${work.absolutePath}/klause-cli/build/install/klause-cli-jvm/bin/klause-cli")
             put("JOB_DIR", dir.toString())
-            put("KLAUSE_CORPUS", config.corpusDir.toString())
             put("KLAUSE_CLI_OPTS", config.solveJavaOpts)
             // Host BLAS libraries otherwise size their own thread pools to the machine.
             put("OPENBLAS_NUM_THREADS", "1")
@@ -407,23 +389,7 @@ class Runner(private val config: Config, private val store: Store) {
         )
     }
 
-    /**
-     * Copy each of [Config.collectPaths] that the job's worktree holds into `collected/` under its job directory,
-     * since the worktree is deleted next. That is where bench writes its per-problem results and its updated
-     * reference tables, which a command would otherwise have to copy out itself.
-     */
-    private fun collect(jobId: Long, dir: Path) {
-        val worktree = config.worktree(jobId)
-        for (relative in config.collectPaths) {
-            val source = worktree.resolve(relative)
-            if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) continue
-            copyTree(source, dir.resolve(COLLECTED).resolve(relative))
-            log(jobId, "collected $relative")
-        }
-    }
-
     private fun cancel(jobId: Long) {
-        collect(jobId, config.jobDir(jobId))
         store.cancelRemaining(jobId)
         store.finish(jobId, Status.CANCELLED)
         removeWorktree(jobId)
@@ -498,7 +464,6 @@ class Runner(private val config: Config, private val store: Store) {
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001
         const val DISPATCH_POLL_MS = 100L
-        const val COLLECTED = "collected"
         const val CASES = "cases"
         const val SHA_DIR_LENGTH = 12
         const val DOCKER_POLL_MS = 5000L

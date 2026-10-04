@@ -2,9 +2,12 @@ package com.eignex.lab
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import java.nio.file.Files
@@ -69,7 +72,7 @@ class PagesTest {
     fun `an experiment's page compares its arms problem by problem`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.database)
-        val spec = ExperimentSpec("ab", mapOf("suite" to "s"))
+        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")))
         val id = store.create("ab", "main", emptyList(), experiment = spec)
         val arms = listOf(PlannedArm(Arm("cp", emptyMap()), "abc"), PlannedArm(Arm("ls", emptyMap()), "abc"))
         store.plan(id, arms, listOf(Problem("s", "p")), Experiments.cases(1, 2, emptyList()), listOf("true" to 1L, "true" to 1L))
@@ -82,6 +85,39 @@ class PagesTest {
 
             assertContains(page, "<td class=\"best\">3*")
             assertContains(page, "1 worse")
+        }
+    }
+
+    @Test
+    fun `a job of shell commands can no longer be submitted`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        testApplication {
+            application { api(config, Store(config.database), host) }
+
+            val response = client.post("/jobs") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"x","ref":"main","commands":[{"cmd":"true"}]}""")
+            }
+
+            assertEquals(HttpStatusCode.Gone, response.status)
+        }
+    }
+
+    @Test
+    fun `two experiments compare side by side with each arm named by its job`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.database)
+        val ids = listOf("a", "b").map { sha ->
+            val id = store.create("sweep@$sha", sha, emptyList(), experiment = ExperimentSpec("sweep@$sha", listOf(mapOf("suite" to "s"))))
+            store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), sha)), listOf(Problem("s", "p")), Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+            id
+        }
+        testApplication {
+            application { api(config, store, host) }
+
+            val page = client.get("/compare?jobs=${ids.joinToString(",")}").bodyAsText()
+
+            assertContains(page, "<th>${ids[0]} base</th><th>${ids[1]} base</th>")
         }
     }
 }

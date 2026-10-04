@@ -10,7 +10,8 @@
 
 # Klause Lab
 
-An experiment server for [Klause](https://github.com/Eignex/klause). It checks out a ref, builds the CLI, and runs a
-queue of benchmark commands, with the queue and live output served over HTTP.
+An experiment server for [Klause](https://github.com/Eignex/klause). It runs experiments: a selection of benchmark
+problems solved under one or more configurations, one problem per case, with the queue, live output and a comparison
+of the results served over HTTP.
 
 Setup and usage: [deploy/SETUP.md](deploy/SETUP.md).

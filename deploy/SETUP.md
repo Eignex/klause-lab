@@ -1,9 +1,8 @@
 # klause lab setup
 
-An experiment server for klause. An experiment (below) solves a selection of problems under several
-configurations, one problem per case. A plain job names a git ref and a list of shell commands. The server checks the ref out
-into a fresh worktree, builds `klause-cli`, and runs the commands one at a time, one job at a time. It serves the
-queue and live output over HTTP.
+An experiment server for klause. An experiment solves a selection of problems under one or more configurations,
+one problem per case. The server builds each commit the configurations name, runs the cases, one experiment at a
+time, and compares the results. It serves the queue, live output and results over HTTP.
 
 It runs on macOS or Linux. Both services log the koblas backend at startup: the engine, and whichever host BLAS
 it finds. They refuse to start (exit 78) unless koblas runs its Vector API engine, which is what klause's Level 1
@@ -12,8 +11,8 @@ call, so it is reported and not required. `klause-lab check` prints the report a
 
 ## Experiments
 
-An experiment runs one selection of problems under every configuration it names, one problem per case. `lab run
-<experiment.json>` queues one:
+An experiment runs one selection of problems under every configuration it names, one problem per case. Each case
+is one job command the lab writes itself; there is no other kind of job. `lab run <experiment.json>` queues one:
 
 ```json
 {
@@ -27,7 +26,8 @@ An experiment runs one selection of problems under every configuration it names,
 ```
 
 - `problems` are `klause-bench select` filters: `suite` (required), `kind`, `category`, `tag`, `name`,
-  `per-family`, `max`, `seed`, `balance`.
+  `per-family`, `max`, `seed`, `balance`. A list of such selections pools their problems, each selection capped on
+  its own, so `[{"suite": "hakank", "max": "60"}, {"suite": "xcsp3-cop", "max": "60"}]` takes 60 of each.
 - Each entry of `configs` (default: one empty config) is merged over `base`, then crossed with every combination of
   `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 10000), `backend`, `engine`,
   `processors`, `lp`, `presolve`, `fixed`, and `param.<name>` for `--param <name>=<value>`. An arm without a `label` is
@@ -52,6 +52,9 @@ An experiment's page (its job id) compares the arms:
   better than a proven optimum;
 - every problem across the arms, the best cell marked, optionally only the rows where arms differ.
 
+`lab compare <id> <id>...` gives the address of the same view over several experiments, each arm named by its job,
+problems paired by suite and name. A scheduled run's page links to the comparison with the run before it.
+
 `lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as the bench writes
 `output/<config>.csv`, for `bench credit` and the `output/` scripts. `lab import <job>` turns the bench records an older
 job collected (each directory directly under its `collected/klause-bench/output/`, records of the job's own commit
@@ -59,70 +62,67 @@ only) into a finished experiment with one arm per directory. Bench records carry
 named by problem alone.
 
 An experiment whose cases could take more than `LAB_MAX_EXPERIMENT_HOURS` (default 24), each using its whole budget,
-fails at planning with the count and the estimate; resubmit with `"confirm": true` to run it. The queue,
-priorities, pause, `parallel` and cancel work on an experiment as on any job, one case at a time.
+fails at planning with the count and the estimate; resubmit with `"confirm": true` to run it. Priorities, pause,
+`parallel` and cancel act between cases (see Client).
+
+`lab schedule <name> <ref> <experiment.json> <interval-sec>` reruns an experiment on every new commit of `<ref>`. The
+runner checks it every interval, also while a job runs: when `<ref>` resolves to a commit other than the last one it
+queued, and that run has ended, it queues the experiment with every arm at the new commit, named `<name>@<sha>`, which
+waits its turn by priority like any other. A scheduled experiment's configs name no `ref`. An unchanged ref queues
+nothing. `lab schedules` lists them with the last commit and job; `lab unschedule <id>` removes one. A schedule from
+before experiments queues nothing and shows as legacy.
 
 ## Crash safety
 
 - `api` and `runner` are separate processes that share one SQLite database (WAL, `synchronous=FULL`). A solve
   that takes the runner down leaves the queue readable.
 - Every state change is committed before the next step starts. A restarted runner resumes the job it was on:
-  - finished commands keep their results;
-  - an interrupted command is rerun from the start;
-  - the interrupted command's processes are killed first, so the rerun never runs alongside them. Each command
-    leads its own process group, and the group is killed whole, including children whose shell already died. A
-    recorded start time keeps a reused pid from being taken for the command.
-- A command's `<n>.exit` file is written atomically once the command ends: an exit code, or `timeout`.
-- A service shutdown, such as a reboot, kills the running command but does not record it, so it reruns after boot.
+  - finished cases keep their results;
+  - an interrupted case is rerun from the start;
+  - the interrupted case's processes are killed first, so the rerun never runs alongside them. Each case leads its
+    own process group, and the group is killed whole, including children whose shell already died. A recorded
+    start time keeps a reused pid from being taken for the case.
+- A case's `<n>.exit` file is written atomically once it ends: an exit code, or `timeout`.
+- A service shutdown, such as a reboot, kills the running cases but does not record them, so they rerun after boot.
 - The service manager restarts either process after a crash and starts both at boot without a login: launchd
   daemons on macOS, systemd user units with lingering on Linux. On macOS the runner also runs under
   `caffeinate -i`, which keeps the machine awake while it lives.
 
-## What a command sees
+## What a case runs in
 
-Commands run with `bash -c`, with the job's worktree as the working directory, and with this environment:
+A case runs `klause-bench solve-one` in its arm's worktree, with this environment:
 
 | variable | value |
 | --- | --- |
-| `KLAUSE_CLI` | the built `klause-cli` start script |
 | `KLAUSE_CLI_OPTS` | `LAB_SOLVE_JAVA_OPTS`, default `-Xmx4g -XX:ActiveProcessorCount=1 -XX:+UseSerialGC` |
-| `KLAUSE_WORKTREE` | the checkout |
-| `KLAUSE_CORPUS` | the bench corpus; the bench's own default `~/.cache/klause-bench/corpus` |
-| `JOB_DIR` | the job's output directory; write result files here |
+| `JOB_DIR` | the job's output directory; the case writes its record under `cases/<n>/` |
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
-Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`. Anything else a command writes into `JOB_DIR` is kept
-after the job ends. The worktree is deleted, but first `LAB_COLLECT_PATHS` is copied out of it into
-`JOB_DIR/collected/`, also when the job is cancelled. By default that is `klause-bench/output`, where bench writes
-its per-problem results, and `klause-bench/reference`, its reference tables with whatever a `bench reference` run
-added. Links inside them are skipped. A failing command does not stop the job: the rest still run, the job
-ends DONE, and the failures are counted on it. FAILED means the job itself could not run, such as a failed checkout
-or build.
+Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output and the record go to
+`JOB_DIR/cases/<n>/`. The worktrees are deleted when the job ends. A failing case does not stop the experiment: the
+rest still run, the job ends DONE, and the failures are counted on it. FAILED means the experiment itself could not
+run, such as a failed checkout, build or selection, or a plan over the size limit.
 
-A job runs one command at a time unless it asks for more: `deploy/lab submit <name> <ref> <file> <timeout>
-<parallel>` runs up to `parallel` of its commands at once, in index order, capped by `LAB_MAX_PARALLEL` (default
-4). `deploy/lab parallel <id> <n>` changes it while the job runs: raising it starts more commands at once, lowering
-it starts no more until fewer than `n` run, and never stops a running one. Setup always runs alone. Each solve holds
-its own heap (`-Xmx4g` by default), so keep `parallel` times that within the machine's memory.
+An experiment runs one case at a time unless its spec asks for more: `parallel` runs up to that many at once, in
+order, capped by `LAB_MAX_PARALLEL` (default 4). `deploy/lab parallel <id> <n>` changes it while the experiment
+runs: raising it starts more cases at once, lowering it starts no more until fewer than `n` run, and never stops a
+running one. Setup always runs alone. Each solve holds its own heap (`-Xmx4g` by default), so keep `parallel` times
+that within the machine's memory.
 
-`LAB_SHARED_PATHS` names worktree directories every job shares, by default `klause-bench/build/bench-cache`. Bench
-keys a reference result by instance, solver and budget alone, so a later job replays it instead of rerunning the
-solver; a klause result also keys on the CLI binary, which each job builds afresh, so it is never replayed into
-another build.
+`LAB_SHARED_PATHS` names worktree directories every job shares, by default `klause-bench/build/bench-cache`. Cases
+run with the bench result cache off, so it serves only the bench's own tooling.
 
 ## Docker
 
 The containerised reference solvers (SCIP, clasp, the XCSP3 cp-sat image) need Docker. `install.sh` picks it up
 by itself: on macOS it installs a boot-time colima daemon when colima is installed (`brew install colima docker`), on
 Linux it uses the system Docker. The runner then waits for `docker info` to answer before it takes a job. Set
-`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once, as a job of their own:
+`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once on the server, from a klause checkout:
 
 ```sh
-printf '%s\n' \
-  'docker build -t klause-scip klause-bench/scip' \
-  'docker build -t klause-clasp klause-bench/clasp' \
-  'docker build -t klause-xcsp3-cpsat klause-bench/xcsp3-cpsat' > images.txt
-deploy/lab submit docker-images main images.txt 3600
+docker build -t klause-scip klause-bench/scip
+docker build -t klause-clasp klause-bench/clasp
+docker build -t klause-xcsp3-cpsat klause-bench/xcsp3-cpsat
 ```
 
 ## Setup
@@ -139,7 +139,7 @@ deploy/lab submit docker-images main images.txt 3600
    registers nothing; it reuses the existing build, since rebuilding under running services breaks them until
    they restart. On macOS it asks for sudo, to install the launchd daemons and to set
    `pmset -a sleep 0 disksleep 0`.
-4. Bench downloads each corpus collection the first time a job uses it. To copy the dev PC's instead (51 GB on the
+4. Bench downloads each corpus collection the first time an experiment selects from it. To copy the dev PC's instead (51 GB on the
    first run, incremental after that), run `deploy/lab corpus` there; it needs the SSH access from step 2.
 5. Prefer Ethernet to Wi-Fi: a Wi-Fi link that drops leaves the server unreachable while it keeps working.
 
@@ -150,8 +150,7 @@ Logs go to `$LAB_DATA/logs/{api,runner}.log`.
 `deploy/update.sh` on the server pulls this repository, builds it, and restarts the services on the new build. It
 needs no sudo. Each build is copied into its own `$LAB_DATA/releases/<sha>-<time>/`, the services run
 `releases/current`, and the three newest releases are kept. A rebuild never rewrites jars a running service still
-loads classes from, which would break it until it restarts. The command a job was running when the services
-restart is rerun. Rerun `install.sh` instead when `lab.env` or the service setup itself changed.
+loads classes from, which would break it until it restarts. The cases running when the services restart are rerun. Rerun `install.sh` instead when `lab.env` or the service setup itself changed.
 
 The runner does this on its own: between jobs, at most every `LAB_UPDATE_CHECK_SEC` (default 300), it fetches the
 checkout `install.sh` ran from and, when its branch's upstream is ahead, runs `update.sh`. A failed build or host
@@ -162,55 +161,50 @@ turns it off.
 
 `deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` to override the default server, `192.168.50.104`.
 
-Jobs run highest priority first (`lab submit … [priority]`, default 0; `lab priority <id> <n>` changes it later), oldest
-first within one priority. A running job checks before each of its commands whether it was paused (`lab pause <id>`) or
-a higher-priority job is waiting; if so it starts no more, lets its running commands finish, and goes back to the
-queue with its worktree and finished commands kept, resuming at its next command when it is taken again. `lab resume
-<id>` releases a paused job.
+Experiments run highest priority first (`"priority"` in the spec, default 0; `lab priority <id> <n>` changes it
+later), oldest first within one priority. A running experiment checks before each case whether it was paused (`lab
+pause <id>`) or a higher-priority one is waiting; if so it starts no more, lets its running cases finish, and goes
+back to the queue with its worktrees and finished cases kept, resuming at its next case when it is taken again. `lab
+resume <id>` releases a paused one.
 
 `lab wait <id>...` returns once every listed job has ended, printing each one's final status. The server holds each
 request open until its job ends (`GET /jobs/<id>/wait`), so a waiting client makes no repeated requests; run it in the
 background to be told when a job is done.
 
-`lab schedule <name> <ref> <file> <interval-sec> [parallel] [priority]` keeps a job template that the runner checks
-every interval, also while a job runs: when `<ref>` resolves to a commit other than the last one it queued, and that
-run has ended, it queues a run pinned to the new commit, named `<name>@<sha>`, which then waits its turn by priority
-like any other job. An unchanged ref queues nothing.
-`lab schedules` lists them with the last commit and job; `lab unschedule <id>` removes one.
-
 ```sh
-cat > sweep.txt <<'EOF'
-./gradlew :klause-bench:bench --max-workers=1 --args="solve suite=mzn-bench per-family=1 max=50 seed=1"
-EOF
-deploy/lab submit mzn-sample main sweep.txt 21600   # optional per-command timeout, seconds; then parallel
+deploy/lab run restarts-ab.json
 deploy/lab ls
-deploy/lab tail 7 0          # the last 8 kB of command 0's stdout; `err` for stderr
-deploy/lab fetch 7           # download jobs/7/ to ./lab-jobs/7 over HTTP; bench results under collected/
+deploy/lab cases 7            # each case: status, arm, problem, result
+deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
+deploy/lab csv 7 > 7.csv
+deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab cancel 7
 ```
 
-The browser page at `http://<server>:8420/` shows the running and queued jobs, with each queued job's place in line
-and the commands running now, then the schedules and the job history. The history filters by text and by state, a
-job's name links to all its runs (a schedule's runs included), and `older` pages back past the newest 200. A job's
-id opens its page: settings, the setup and job logs, every command with its exit code and output, and, while the job
-is unfinished, pause/resume, priority, parallel and cancel. A job that ran every command but saw some fail reads
-`DONE · N failed`, which links to just the failed commands. The live parts refresh in place every 10 s, while a job
-is unfinished.
+The browser page at `http://<server>:8420/` shows the running and queued experiments, with each queued one's place
+in line and the cases running now, then the schedules and the history. The history filters by text and by state, a
+job's name links to all its runs (a schedule's runs included), and `older` pages back past the newest 200. An
+id opens its page: settings, the setup and job logs, the comparison above, every case's command with its exit code
+and output, and, while it is unfinished, pause/resume, priority, parallel and cancel. One that ran every case but
+saw some fail reads `DONE · N failed`, which links to just the failed cases. Jobs from before experiments keep their
+pages and files. The live parts refresh in place every 10 s, while a job is unfinished.
 
 ## API
 
 | method | path | |
 | --- | --- | --- |
-| `POST` | `/jobs` | `{"name", "ref", "commands": [{"cmd", "timeoutSec"?}]}` → `{"id"}`; a branch or tag origin lacks is refused |
-| `GET` | `/jobs`, `/jobs/{id}` | job and command states; `/jobs` takes `?limit`, `?before=<id>` and `?name` |
-| `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its command tree killed |
+| `GET` | `/jobs`, `/jobs/{id}` | job and case-command states; `/jobs` takes `?limit`, `?before=<id>` and `?name` |
+| `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its cases' process trees killed |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id"}`; the job it queues plans its cases when it starts |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id"}`; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
 | `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
+| `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
+| `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
+| `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
 | `POST` | `/jobs/{id}/import` | an ended job's collected bench records as a new, finished experiment → `{"id"}` |
 | `GET` | `/health` | queue counts and the koblas report |
 

@@ -151,16 +151,17 @@ class StoreTest {
     }
 
     @Test
-    fun `a schedule keeps its commands and remembers the commit it last queued`() {
+    fun `a schedule keeps its experiment and remembers the commit it last queued`() {
         val store = store()
-        val id = store.createSchedule("status", "main", listOf(CommandSpec("true", 5L)), 2, -1, 3600)
+        val spec = ExperimentSpec("status", listOf(mapOf("suite" to "hakank")), parallel = 2, priority = -1)
+        val id = store.createSchedule("status", "main", spec, 3600)
         store.scheduleRan(id, "abc123", 7L)
 
         val schedule = store.schedules().single()
 
         assertEquals(
-            listOf(listOf(CommandSpec("true", 5L)), "abc123", 7L, -1),
-            listOf(schedule.commands, schedule.lastSha, schedule.lastJob, schedule.priority),
+            listOf(spec, "abc123", 7L, -1),
+            listOf(schedule.experiment, schedule.lastSha, schedule.lastJob, schedule.priority),
         )
     }
 
@@ -198,7 +199,7 @@ class StoreTest {
     @Test
     fun `a planned experiment lists each case with its problem, arm and record`() {
         val store = store()
-        val spec = ExperimentSpec("e", mapOf("suite" to "s"))
+        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")))
         val id = store.create("e", "main", emptyList(), experiment = spec)
         val arms = listOf(PlannedArm(Arm("a", emptyMap()), "sha-a"), PlannedArm(Arm("b", emptyMap()), "sha-b"))
         val cases = Experiments.cases(problems = 1, arms = 2, seeds = emptyList())
@@ -216,7 +217,7 @@ class StoreTest {
     @Test
     fun `an experiment job keeps its spec`() {
         val store = store()
-        val spec = ExperimentSpec("e", mapOf("suite" to "s"), grid = mapOf("engine" to listOf("cp", "ls")))
+        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), grid = mapOf("engine" to listOf("cp", "ls")))
 
         val id = store.create("e", "main", emptyList(), experiment = spec)
 

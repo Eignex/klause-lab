@@ -29,30 +29,17 @@ import java.io.RandomAccessFile
 import java.util.concurrent.TimeUnit
 
 @Serializable
-data class CommandSpec(val cmd: String, val timeoutSec: Long? = null)
-
-@Serializable
-data class JobSpec(
-    val name: String,
-    val ref: String,
-    val commands: List<CommandSpec>,
-    val parallel: Int = 1,
-    val priority: Int = 0,
-)
-
-@Serializable
 data class ParallelSpec(val parallel: Int)
 
 @Serializable
 data class PrioritySpec(val priority: Int)
 
+/** An experiment rerun on every new commit of [ref]: each run is [experiment] with every arm at that commit. */
 @Serializable
 data class ScheduleSpec(
     val name: String,
     val ref: String,
-    val commands: List<CommandSpec>,
-    val parallel: Int = 1,
-    val priority: Int = 0,
+    val experiment: ExperimentSpec,
     val intervalSec: Long = 3600,
 )
 
@@ -92,20 +79,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: 200, call.parameters["before"]?.toLong(), call.parameters["name"]))
         }
         post("/jobs") {
-            val spec = call.receive<JobSpec>()
-            require(spec.name.isNotBlank()) { "name is required" }
-            require(spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "ref is required" }
-            require(spec.commands.isNotEmpty()) { "at least one command is required" }
-            requireParallel(spec.parallel, config)
-            requireRef(spec.ref, config)
-            val id = store.create(
-                spec.name,
-                spec.ref,
-                spec.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) },
-                spec.parallel,
-                spec.priority,
-            )
-            call.respond(HttpStatusCode.Created, Created(id))
+            call.respond(HttpStatusCode.Gone, "jobs of shell commands are gone: submit an experiment (POST /experiments)")
         }
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
@@ -117,6 +91,15 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
+        get("/compare") {
+            val ids = requireNotNull(call.parameters["jobs"]) { "jobs=<id>,<id>… is required" }.split(',').map { it.trim().toLong() }
+            require(ids.size in 2..MAX_COMPARED) { "compare 2 to $MAX_COMPARED experiments" }
+            val jobs = ids.map { id -> requireNotNull(store.job(id)?.takeIf { it.experiment != null }) { "job $id is not an experiment" } }
+            // Arms are named by their job, so the same arm of two runs stays two columns.
+            val arms = jobs.flatMap { job -> store.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
+            val cases = jobs.flatMap { job -> store.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
+            call.respondText(comparePage(config, jobs, arms, cases), ContentType.Text.Html)
+        }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
         get("/experiments/{id}/cases.csv") {
             call.respondText(Results.casesCsv(store.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
@@ -142,6 +125,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         arms = if (experiment) store.arms(job.id) else emptyList(),
                         cases = if (experiment) store.cases(job.id) else emptyList(),
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
+                        previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
@@ -198,11 +182,13 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/schedules") {
             val spec = call.receive<ScheduleSpec>()
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
-            require(spec.commands.isNotEmpty()) { "at least one command is required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
-            requireParallel(spec.parallel, config)
+            Experiments.validate(spec.experiment, config.maxParallel)
+            require(Experiments.arms(spec.experiment).none { "ref" in it.values }) {
+                "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
+            }
             requireRef(spec.ref, config)
-            val id = store.createSchedule(spec.name, spec.ref, spec.commands, spec.parallel, spec.priority, spec.intervalSec)
+            val id = store.createSchedule(spec.name, spec.ref, spec.experiment, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/schedules") { call.respond(store.schedules()) }
@@ -238,6 +224,12 @@ private const val MAX_WAIT_SEC = 3600L
 private const val WAIT_POLL_MS = 2000L
 private const val MIN_SCHEDULE_SEC = 60L
 private const val PAGE_SIZE = 200
+private const val MAX_COMPARED = 6
+
+/** The latest finished experiment queued by the same schedule before [job], whose name is `<schedule>@<sha>`. */
+private fun previousRun(store: Store, job: Job): Long? =
+    store.jobs(limit = PAGE_SIZE, before = job.id, name = job.name.substringBefore('@'))
+        .firstOrNull { it.experiment != null && it.status == Status.DONE && '@' in it.name }?.id
 private const val LS_REMOTE_SEC = 15L
 private val TEXT_FILES = setOf("", "out", "err", "log", "txt", "sha", "pid")
 

@@ -74,7 +74,7 @@ object Results {
                 Triple(Case(index.getValue(record.string("problem").orEmpty()), armIndex, null), record.toString(), file)
             }
         }
-        val spec = ExperimentSpec("${job.name} (imported)", mapOf("imported-from" to job.id.toString()))
+        val spec = ExperimentSpec("${job.name} (imported)", listOf(mapOf("imported-from" to job.id.toString())))
         return store.importExperiment(
             spec.name, job.ref, sha, spec,
             arms.map { (label, _) -> PlannedArm(Arm(label, mapOf("ref" to sha)), sha) },

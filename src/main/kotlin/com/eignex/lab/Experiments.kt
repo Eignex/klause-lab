@@ -1,13 +1,20 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonTransformingSerializer
 
 /**
  * An experiment: one selection of problems, solved by every configuration it expands to, once per seed. Each
  * (problem, configuration, seed) is a case, and a case is one command the lab writes itself: a `klause-bench
  * solve-one` in the worktree of that configuration's commit.
  *
- * [problems] are bench selection filters (`suite`, `kind`, `per-family`, …). Each entry of [configs] is merged over
+ * [problems] are bench selection filters (`suite`, `kind`, `per-family`, …), or a list of such selections whose
+ * problems are pooled, each selection capped on its own. Each entry of [configs] is merged over
  * [base], and each result is crossed with every combination of [grid]'s values, so an A/B is a grid of one axis
  * with two values. A configuration's keys are bench solve arguments plus `ref` (the commit to build, default
  * `main`) and `label` (its name in results); `param.<name>` becomes `param=<name>=<value>`.
@@ -15,7 +22,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ExperimentSpec(
     val name: String,
-    val problems: Map<String, String>,
+    @Serializable(with = SelectionsSerializer::class)
+    val problems: List<Map<String, String>>,
     val base: Map<String, String> = emptyMap(),
     val configs: List<Map<String, String>> = listOf(emptyMap()),
     val grid: Map<String, List<String>> = emptyMap(),
@@ -82,10 +90,13 @@ object Experiments {
         require(spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
         require(spec.configs.isNotEmpty()) { "configs must not be empty" }
         require(spec.grid.values.none { it.isEmpty() }) { "every grid axis needs at least one value" }
-        require(spec.problems["suite"]?.isNotBlank() == true) { "problems.suite is required" }
-        for ((key, value) in spec.problems) {
-            require(key in PROBLEM_KEYS) { "unknown problems key '$key' (have ${PROBLEM_KEYS.sorted()})" }
-            requireValue(key, value)
+        require(spec.problems.isNotEmpty()) { "problems must name at least one selection" }
+        for (selection in spec.problems) {
+            require(selection["suite"]?.isNotBlank() == true) { "every problems selection needs a suite" }
+            for ((key, value) in selection) {
+                require(key in PROBLEM_KEYS) { "unknown problems key '$key' (have ${PROBLEM_KEYS.sorted()})" }
+                requireValue(key, value)
+            }
         }
         for (arm in arms(spec)) {
             for ((key, value) in arm.values) {
@@ -99,8 +110,9 @@ object Experiments {
         require(arms(spec).map { it.label }.distinct().size == arms(spec).size) { "config labels must be unique" }
     }
 
-    /** The bench arguments that select [spec]'s problems. */
-    fun selectArgs(spec: ExperimentSpec): String = spec.problems.entries.joinToString(" ") { (key, value) -> quote("$key=$value") }
+    /** The bench arguments of one problems [selection]. */
+    fun selectArgs(selection: Map<String, String>): String =
+        selection.entries.joinToString(" ") { (key, value) -> quote("$key=$value") }
 
     /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
      *  `$JOB_DIR/cases/<index>`. */
@@ -140,6 +152,14 @@ object Experiments {
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed")
     private const val CASE_OVERHEAD_SEC = 120L
     private const val MS_PER_HOUR = 3_600_000.0
+}
+
+/** Reads `problems` as one selection or a list of them; writes a list. */
+object SelectionsSerializer : JsonTransformingSerializer<List<Map<String, String>>>(
+    ListSerializer(MapSerializer(String.serializer(), String.serializer())),
+) {
+    override fun transformDeserialize(element: JsonElement): JsonElement =
+        element as? JsonArray ?: JsonArray(listOf(element))
 }
 
 const val DEFAULT_REF = "main"

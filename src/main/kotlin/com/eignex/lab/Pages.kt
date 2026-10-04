@@ -53,6 +53,7 @@ internal fun jobPage(
     arms: List<PlannedArm> = emptyList(),
     cases: List<CaseResult> = emptyList(),
     showCommands: Boolean = true,
+    previous: Long? = null,
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
@@ -94,7 +95,11 @@ internal fun jobPage(
         }
         append("</div>")
     }
-    if (job.experiment != null) append(experimentSection(config, job, arms, cases))
+    if (previous != null) {
+        append("<p>Previous run of this schedule: <a href=\"/jobs/$previous\">$previous</a> · ")
+        append("<a href=\"/compare?jobs=$previous,${job.id}\">compare with it</a></p>")
+    }
+    if (job.experiment != null) append(experimentSection(config, job.id, arms, cases))
     if (!showCommands) {
         append("<p><a href=\"/jobs/${job.id}?commands\">every case's command</a></p></div>")
         append(SCRIPT)
@@ -128,7 +133,7 @@ internal fun jobPage(
 }
 
 /** An experiment's results: each arm's totals and score, the disagreements, and every problem across the arms. */
-private fun experimentSection(config: Config, job: Job, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
+private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
     if (arms.isEmpty()) {
         append("<p class=\"muted\">Not planned yet: the runner selects the problems and writes the cases when it sets the job up.</p>")
         return@buildString
@@ -139,10 +144,11 @@ private fun experimentSection(config: Config, job: Job, arms: List<PlannedArm>, 
     val total = cases.groupBy { it.arm }
     append("<h2>Arms <small>${cases.map { it.problem }.distinct().size} problems")
     if (seeds.size > 1) append(" × ${seeds.size} seeds")
-    append(" · <a href=\"/experiments/${job.id}/cases.csv\">cases.csv</a></small></h2>")
+    if (job != null) append(" · <a href=\"/experiments/$job/cases.csv\">cases.csv</a>")
+    append("</small></h2>")
     append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
     append("<th class=\"num\">proven</th><th class=\"num\">errors</th><th class=\"num\">score</th><th>vs ${esc(labels.first())}</th>")
-    append("<th>bench csv</th></tr>")
+    append(if (job != null) "<th>bench csv</th></tr>" else "</tr>")
     for ((planned, summary) in arms.zip(comparison.arms)) {
         val commit = commitUrl(config.repoUrl, planned.sha)?.let { "<a href=\"$it\">${planned.sha.take(9)}</a>" } ?: planned.sha.take(9)
         val versus = if (summary.label == labels.first()) "<span class=\"muted\">baseline</span>" else
@@ -151,12 +157,16 @@ private fun experimentSection(config: Config, job: Job, arms: List<PlannedArm>, 
         append("<td><code>$commit</code></td><td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
         append("<td class=\"num\">${summary.solved}</td><td class=\"num\">${summary.proven}</td>")
         append("<td class=\"num\">${if (summary.errors > 0) "<span class=\"FAILED\">${summary.errors}</span>" else "0"}</td>")
-        append("<td class=\"num\">${"%.1f".format(summary.score)}</td><td>$versus</td><td>")
-        append(seeds.joinToString(" ") { seed ->
-            val name = if (seed == null) "csv" else "seed $seed"
-            "<a href=\"/experiments/${job.id}/bench.csv${query("arm" to summary.label, "seed" to seed?.toString())}\">$name</a>"
-        })
-        append("</td></tr>")
+        append("<td class=\"num\">${"%.1f".format(summary.score)}</td><td>$versus</td>")
+        if (job != null) {
+            append("<td>")
+            append(seeds.joinToString(" ") { seed ->
+                val name = if (seed == null) "csv" else "seed $seed"
+                "<a href=\"/experiments/$job/bench.csv${query("arm" to summary.label, "seed" to seed?.toString())}\">$name</a>"
+            })
+            append("</td>")
+        }
+        append("</tr>")
     }
     append("</table></div>")
     if (comparison.disagreements.isNotEmpty()) {
@@ -215,6 +225,21 @@ private fun number(value: Double) = if (value == Math.rint(value) && kotlin.math
 private fun name(problem: Problem) = if (problem.suite.isEmpty()) problem.problem else "${problem.suite}/${problem.problem}"
 
 private fun describe(arm: Arm) = arm.values.toSortedMap().entries.joinToString(" ") { (k, v) -> "$k=$v" }
+
+/**
+ * Several experiments side by side, each arm named by its job: a scheduled run against the one before it, or any
+ * experiments over the same problems. Problems pair up by suite and name, seeds by value.
+ */
+internal fun comparePage(config: Config, jobs: List<Job>, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
+    append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · klause lab", live = false))
+    append("<header><h1><a href=\"/\">klause lab</a> / compare ")
+    append(jobs.joinToString(" · ") { "<a href=\"/jobs/${it.id}\">${it.id} ${esc(it.name)}</a>" })
+    append("</h1></header><div>")
+    append(experimentSection(config, null, arms, cases))
+    append("</div>")
+    append(SCRIPT)
+    append("</body></html>")
+}
 
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
     append(head("$jobId files · klause lab", live = false))
@@ -298,13 +323,15 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
 }
 
 private fun schedulesTable(schedules: List<Schedule>): String = buildString {
-    append("<div class=\"scroll\"><table><tr><th>name</th><th>ref</th><th>every</th><th>commands</th>")
+    append("<div class=\"scroll\"><table><tr><th>name</th><th>ref</th><th>every</th><th>arms</th>")
     append("<th>last run</th><th>checked</th><th>next check</th></tr>")
     for (schedule in schedules) {
         append("<tr><td><a class=\"plain\" href=\"/${query("name" to schedule.name)}\">${esc(schedule.name)}</a>")
         if (schedule.priority != 0) append("<br><small>priority ${schedule.priority}</small>")
         append("</td><td><code>${esc(schedule.ref)}</code></td><td>${span(schedule.intervalSec)}</td>")
-        append("<td>${schedule.commands.size}${if (schedule.parallel > 1) " ×${schedule.parallel}" else ""}</td><td>")
+        val arms = schedule.experiment?.let { Experiments.arms(it).size.toString() }
+            ?: "<span class=\"muted\" title=\"from before experiments; queues nothing\">legacy</span>"
+        append("<td>$arms${if (schedule.parallel > 1) " ×${schedule.parallel}" else ""}</td><td>")
         if (schedule.lastJob != null) {
             append("<a href=\"/jobs/${schedule.lastJob}\">${schedule.lastJob}</a> <code>${schedule.lastSha?.take(9) ?: ""}</code>")
         } else {

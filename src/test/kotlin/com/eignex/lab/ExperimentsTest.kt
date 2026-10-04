@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -10,7 +11,7 @@ class ExperimentsTest {
         configs: List<Map<String, String>> = listOf(emptyMap()),
         grid: Map<String, List<String>> = emptyMap(),
         base: Map<String, String> = emptyMap(),
-    ) = ExperimentSpec("e", mapOf("suite" to "hakank"), base, configs, grid)
+    ) = ExperimentSpec("e", listOf(mapOf("suite" to "hakank")), base, configs, grid)
 
     @Test
     fun `a grid crosses every axis over the base`() {
@@ -70,5 +71,15 @@ class ExperimentsTest {
             "solve-one 'suite=xcsp3-cop' 'problem=Rack-1' 'param=restarts=luby' 'timeout=3000' 'solver-seed=5' " +
                 "out=\"\$JOB_DIR/cases/12\"",
         )
+    }
+
+    @Test
+    fun `problems read as one selection or a list of them`() {
+        val one = """{"name":"e","problems":{"suite":"a"}}"""
+        val two = """{"name":"e","problems":[{"suite":"a"},{"suite":"b","max":"5"}]}"""
+
+        val read = listOf(one, two).map { Json.decodeFromString<ExperimentSpec>(it).problems }
+
+        assertEquals(listOf(listOf(mapOf("suite" to "a")), listOf(mapOf("suite" to "a"), mapOf("suite" to "b", "max" to "5"))), read)
     }
 }
