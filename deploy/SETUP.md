@@ -246,8 +246,8 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
 | `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
 | `GET` | `/trend[?name=<schedule>]` | a schedule's runs over its commits; the first schedule without a name |
-| `GET` | `/references[?q=<text>]` | reference coverage, or the results matching text |
-| `POST` | `/references/import[?ref=<ref>]` | load the bench's reference tables at ref → `{"sha", "read", "changed"}` |
+| `GET` | `/references[?q=&solver=&collection=&verdict=]` | reference coverage, or the results the filters keep |
+| `GET` | `/problem?collection=<c>&problem=<p>` | one problem: every reference solver's verdict and every lab run |
 | `GET` | `/experiments/{id}/reference` | each arm against the reference, with disagreements |
 | `GET` | `/health` | queue counts and the koblas report |
 
