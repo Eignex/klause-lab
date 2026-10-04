@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.isSymbolicLink
@@ -30,6 +31,9 @@ class Runner(private val config: Config, private val store: Store) {
     @Volatile
     private var stopping = false
 
+    /** Held over every git operation on the shared mirror, which the schedule thread and job setup both touch. */
+    private val mirrorLock = Any()
+
     fun loop() {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
@@ -39,10 +43,17 @@ class Runner(private val config: Config, private val store: Store) {
             config.updateCheckSec * 1000,
             config.dataDir.resolve("logs").resolve("update.log").toFile(),
         )
+        // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
+        // priorities then decide when it runs.
+        thread(isDaemon = true, name = "schedules") {
+            while (true) {
+                runCatching { enqueueScheduled() }.onFailure { println("schedules: ${it.message}") }
+                Thread.sleep(SCHEDULE_POLL_MS)
+            }
+        }
         while (true) {
             // Only between jobs: an update restarts the runner, which would cut a command off mid-run.
             updater.maybeUpdate()
-            runCatching { enqueueScheduled() }.onFailure { println("schedules: ${it.message}") }
             if (!disk.allowsWork()) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
@@ -148,13 +159,17 @@ class Runner(private val config: Config, private val store: Store) {
     private fun enqueueScheduled() {
         val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
         if (due.isEmpty()) return
-        if (!config.mirror.exists()) capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
-        capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+        synchronized(mirrorLock) {
+            if (!config.mirror.exists()) capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+            capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+        }
         for (schedule in due) {
             store.scheduleChecked(schedule.id, now())
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
             val sha = runCatching {
-                capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}")
+                synchronized(mirrorLock) {
+                    capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}")
+                }
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha) continue
             val commands = schedule.commands.map { it.cmd to (it.timeoutSec ?: config.defaultTimeoutSec) }
@@ -168,15 +183,18 @@ class Runner(private val config: Config, private val store: Store) {
     private fun setup(job: Job, dir: Path): String {
         val log = dir.resolve("setup.log").toFile()
         log.writeText("")
-        if (!config.mirror.exists()) {
-            sh(log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+        val sha = synchronized(mirrorLock) {
+            if (!config.mirror.exists()) {
+                sh(log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+            }
+            sh(log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+            val sha = runCatching { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(job.ref + "^{commit}")}") }
+                .getOrElse { error("unknown ref: ${job.ref} (not on origin; is it pushed?)") }
+            removeWorktree(job.id)
+            config.worktree(job.id).parent.createDirectories()
+            sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(config.worktree(job.id).toString())} $sha")
+            sha
         }
-        sh(log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
-        val sha = runCatching { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(job.ref + "^{commit}")}") }
-            .getOrElse { error("unknown ref: ${job.ref} (not on origin; is it pushed?)") }
-        removeWorktree(job.id)
-        config.worktree(job.id).parent.createDirectories()
-        sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(config.worktree(job.id).toString())} $sha")
         linkShared(config.worktree(job.id))
         sh(log, config.worktree(job.id).toFile(),
             "./gradlew :klause-cli:installJvmDist --max-workers=${config.gradleWorkers} -q")
@@ -334,9 +352,11 @@ class Runner(private val config: Config, private val store: Store) {
             val link = path.resolve(relative)
             if (link.isSymbolicLink()) Files.delete(link)
         }
-        if (config.mirror.exists()) {
-            runCatching { capture(config.mirror.toFile(), "git worktree remove --force ${quote(path.toString())}") }
-            runCatching { capture(config.mirror.toFile(), "git worktree prune") }
+        synchronized(mirrorLock) {
+            if (config.mirror.exists()) {
+                runCatching { capture(config.mirror.toFile(), "git worktree remove --force ${quote(path.toString())}") }
+                runCatching { capture(config.mirror.toFile(), "git worktree prune") }
+            }
         }
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) deleteTree(path)
     }
@@ -388,6 +408,7 @@ class Runner(private val config: Config, private val store: Store) {
         const val DISPATCH_POLL_MS = 100L
         const val COLLECTED = "collected"
         const val DOCKER_POLL_MS = 5000L
+        const val SCHEDULE_POLL_MS = 30_000L
         const val DOCKER_LOG_EVERY_MS = 60_000L
     }
 }
