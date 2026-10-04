@@ -31,7 +31,8 @@ data class ExperimentSpec(
     val seeds: List<Long> = emptyList(),
     /** Runs of each (problem, configuration, seed), identical but for the machine's noise, which they measure. */
     val repeats: Int = 1,
-    val parallel: Int = 1,
+    /** Cases run at once; unset, as many as the lab allows, within its core budget either way. */
+    val parallel: Int? = null,
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
@@ -42,6 +43,9 @@ data class ExperimentSpec(
 data class Arm(val label: String, val values: Map<String, String>) {
     val ref: String get() = values["ref"] ?: DEFAULT_REF
     val timeoutMs: Long get() = values["timeout"]?.toLong() ?: DEFAULT_TIMEOUT_MS
+
+    /** Cores each of the arm's solves keeps busy: its portfolio's `processors`, one without. */
+    val cores: Int get() = values["processors"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
 }
 
 /** One problem as `klause-bench select` names it. */
@@ -87,9 +91,10 @@ object Experiments {
     }
 
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
-    fun validate(spec: ExperimentSpec, maxParallel: Int) {
+    fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
-        require(spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
+        require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
+        arms(spec).firstOrNull { it.cores > cores }?.let { require(false) { "arm '${it.label}' asks for ${it.cores} processors; the lab has $cores cores" } }
         require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }
         require(spec.configs.isNotEmpty()) { "configs must not be empty" }
         require(spec.grid.values.none { it.isEmpty() }) { "every grid axis needs at least one value" }
@@ -142,9 +147,13 @@ object Experiments {
     /** How long a case may run: the solver's own budget, the bench's hard kill at twice it, and room for the JVMs. */
     fun caseTimeoutSec(arm: Arm): Long = arm.timeoutMs * 2 / 1000 + CASE_OVERHEAD_SEC
 
-    /** Hours [cases] take at [parallel], each using its full budget: the cost of a run where nothing solves early. */
-    fun estimateHours(cases: List<Case>, arms: List<Arm>, parallel: Int): Double =
-        cases.sumOf { arms[it.arm].timeoutMs } / parallel.toDouble() / MS_PER_HOUR
+    /** Hours [cases] take, each using its full budget, run [parallel] at once within [cores]: the cost of a run where
+     *  nothing solves early. The tighter of the two limits sets it. */
+    fun estimateHours(cases: List<Case>, arms: List<Arm>, parallel: Int, cores: Int = Int.MAX_VALUE): Double {
+        val byCount = cases.sumOf { arms[it.arm].timeoutMs } / parallel.toDouble()
+        val byCores = cases.sumOf { arms[it.arm].timeoutMs * arms[it.arm].cores } / cores.toDouble()
+        return maxOf(byCount, byCores) / MS_PER_HOUR
+    }
 
     private fun requireValue(key: String, value: String) =
         require(value.isNotBlank() && value.none { it.isWhitespace() || it.isISOControl() }) { "'$key' has an empty value or whitespace in it" }

@@ -90,10 +90,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
             val spec = call.receive<ExperimentSpec>()
-            Experiments.validate(spec, config.maxParallel)
+            Experiments.validate(spec, config.maxParallel, config.cores)
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
-            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel, spec.priority, spec)
+            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.maxParallel, spec.priority, spec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
@@ -247,7 +247,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = call.receive<ScheduleSpec>()
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
-            Experiments.validate(spec.experiment, config.maxParallel)
+            Experiments.validate(spec.experiment, config.maxParallel, config.cores)
             require(Experiments.arms(spec.experiment).none { "ref" in it.values }) {
                 "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
             }

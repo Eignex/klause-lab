@@ -139,8 +139,12 @@ class Runner(private val config: Config, private val store: Store) {
                     yielding = true
                     if (active.isEmpty()) return Dispatched.YIELDED
                 } else {
+                    // Within the job's case limit and the lab's core budget, in order: a case too big for the cores
+                    // left waits for room rather than letting smaller later ones jump it. One case always may run.
                     val limit = store.parallel(job.id).coerceIn(1, config.maxParallel)
-                    while (active.size < limit && pending.isNotEmpty()) {
+                    while (pending.isNotEmpty() && active.size < limit &&
+                        (active.isEmpty() || held(active.keys, job) + pending.first().cores <= config.cores)
+                    ) {
                         val command = pending.removeFirst()
                         store.commandStarted(job.id, command.index)
                         active[command.index] = pool.submit<Int> { run(job, command, dir) }
@@ -158,6 +162,9 @@ class Runner(private val config: Config, private val store: Store) {
             pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
         }
     }
+
+    /** Cores the running cases at [indices] of [job] hold. */
+    private fun held(indices: Collection<Int>, job: Job): Int = job.commands.filter { it.index in indices }.sumOf { it.cores }
 
     /**
      * Queue a run of each due schedule whose ref has moved since its last run, pinned to the commit it resolves to, so
@@ -186,7 +193,7 @@ class Runner(private val config: Config, private val store: Store) {
             if (sha == schedule.lastSha) continue
             val name = "${schedule.name}@${sha.take(9)}"
             val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha))
-            val id = store.create(name, sha, emptyList(), spec.parallel, spec.priority, spec)
+            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.maxParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
@@ -246,18 +253,19 @@ class Runner(private val config: Config, private val store: Store) {
         }.distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems" }
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
-        val hours = Experiments.estimateHours(cases, arms, spec.parallel)
+        val parallel = spec.parallel ?: config.maxParallel
+        val hours = Experiments.estimateHours(cases, arms, parallel, config.cores)
         require(spec.confirm || hours <= config.maxExperimentHours) {
-            "${cases.size} cases could take %.1f h at ×${spec.parallel}, over the ${config.maxExperimentHours} h limit; ".format(hours) +
+            "${cases.size} cases could take %.1f h at ×$parallel, over the ${config.maxExperimentHours} h limit; ".format(hours) +
                 "resubmit with \"confirm\": true"
         }
         val commands = cases.mapIndexed { index, case ->
             val arm = arms[case.arm]
             val path = experimentWorktree(job.id, shas.getValue(arm.ref), primary)
             Experiments.command(path.toString(), problems[case.problem], arm, case.seed, index, config.corpusDir.toString()) to
-                Experiments.caseTimeoutSec(arm)
-        }
-        store.plan(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
+                Experiments.caseTimeoutSec(arm) to arm.cores
+        }.map { (command, cores) -> CaseCommand(command.first, command.second, cores) }
+        store.planCommands(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
         log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
     }
 
@@ -311,7 +319,9 @@ class Runner(private val config: Config, private val store: Store) {
             .redirectError(dir.resolve("${command.index}.err").toFile())
         builder.environment().apply {
             put("JOB_DIR", dir.toString())
-            put("KLAUSE_CLI_OPTS", config.solveJavaOpts)
+            // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
+            // solve does not size its pools to the whole machine.
+            put("KLAUSE_CLI_OPTS", "${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores}")
             // Host BLAS libraries otherwise size their own thread pools to the machine.
             put("OPENBLAS_NUM_THREADS", "1")
             put("VECLIB_MAXIMUM_THREADS", "1")

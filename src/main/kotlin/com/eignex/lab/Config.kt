@@ -15,11 +15,15 @@ data class Config(
     /** JDK the klause build and CLI run on. */
     val javaHome: String = env("LAB_JAVA_HOME", System.getenv("JAVA_HOME") ?: ""),
     /** JVM flags for every klause-cli solve a command starts. */
-    val solveJavaOpts: String = env("LAB_SOLVE_JAVA_OPTS", "-Xmx4g -XX:ActiveProcessorCount=1 -XX:+UseSerialGC"),
+    val solveJavaOpts: String = env("LAB_SOLVE_JAVA_OPTS", "-Xmx3g -XX:+UseSerialGC"),
     val gradleWorkers: Int = env("LAB_GRADLE_WORKERS", "2").toInt(),
     val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
-    /** The most commands one job may run at once, whatever it asks for. Each solve holds its own heap. */
-    val maxParallel: Int = env("LAB_MAX_PARALLEL", "4").toInt(),
+    /** The most cases one job may run at once, whatever it asks for: each holds its own solve heap, so memory bounds
+     *  this, where [cores] bounds the threads. An experiment that sets no `parallel` runs this many. */
+    val maxParallel: Int = env("LAB_MAX_PARALLEL", "6").toInt(),
+    /** Cores the running cases may hold together, a case holding its arm's `processors`; two are left for the JVMs
+     *  around the solves and the machine itself. */
+    val cores: Int = env("LAB_CORES", (Runtime.getRuntime().availableProcessors() - 2).coerceAtLeast(1).toString()).toInt(),
     /** The klause-lab checkout the services were installed from; the runner updates from it between jobs. */
     val sourceDir: Path? = System.getenv("LAB_SOURCE")?.takeIf { it.isNotBlank() }?.let { Path(it) },
     /** Seconds between update checks; `0` turns self-update off. */

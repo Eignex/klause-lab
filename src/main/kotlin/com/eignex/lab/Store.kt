@@ -22,7 +22,12 @@ data class Command(
     val exitCode: Int? = null,
     val startedAt: Long? = null,
     val finishedAt: Long? = null,
+    /** Cores the command keeps busy: its arm's `processors`; the runner's core budget counts these. */
+    val cores: Int = 1,
 )
+
+/** A command as planned: what runs, how long it may, and how many cores it holds. */
+data class CaseCommand(val cmd: String, val timeoutSec: Long, val cores: Int = 1)
 
 @Serializable
 data class Job(
@@ -131,6 +136,10 @@ class Store(file: Path) {
             if ("priority" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
             if ("paused" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
             if ("experiment" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN experiment TEXT")
+            val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { rows ->
+                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
+            }
+            if ("cores" !in commandColumns) it.execute("ALTER TABLE commands ADD COLUMN cores INTEGER NOT NULL DEFAULT 1")
             val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { rows ->
                 generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
             }
@@ -189,19 +198,20 @@ class Store(file: Path) {
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
-        insertCommands(id, commands)
+        insertCommands(id, commands.map { (cmd, timeout) -> CaseCommand(cmd, timeout) })
         id
     }
 
-    private fun insertCommands(jobId: Long, commands: List<Pair<String, Long>>) = connection.prepareStatement(
-        "INSERT INTO commands (job_id, idx, cmd, timeout_sec, status) VALUES (?, ?, ?, ?, ?)",
+    private fun insertCommands(jobId: Long, commands: List<CaseCommand>) = connection.prepareStatement(
+        "INSERT INTO commands (job_id, idx, cmd, timeout_sec, status, cores) VALUES (?, ?, ?, ?, ?, ?)",
     ).use { statement ->
-        commands.forEachIndexed { index, (cmd, timeout) ->
+        commands.forEachIndexed { index, command ->
             statement.setLong(1, jobId)
             statement.setInt(2, index)
-            statement.setString(3, cmd)
-            statement.setLong(4, timeout)
+            statement.setString(3, command.cmd)
+            statement.setLong(4, command.timeoutSec)
             statement.setString(5, Status.QUEUED.name)
+            statement.setInt(6, command.cores)
             statement.addBatch()
         }
         statement.executeBatch()
@@ -210,7 +220,11 @@ class Store(file: Path) {
     /** Record an experiment's plan in one transaction: its arms, its problems, and a command per case, the case at
      *  each command's index. A job with commands is planned. */
     @Synchronized
-    fun plan(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) {
+    fun plan(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) =
+        planCommands(jobId, arms, problems, cases, commands.map { (cmd, timeout) -> CaseCommand(cmd, timeout) })
+
+    @Synchronized
+    fun planCommands(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>) {
         require(cases.size == commands.size) { "a command per case" }
         transaction { planRows(jobId, arms, problems, cases, commands) }
     }
@@ -247,13 +261,13 @@ class Store(file: Path) {
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
-        planRows(id, arms, problems, records.map { it.first }, sources.map { it to 0L })
+        planRows(id, arms, problems, records.map { it.first }, sources.map { CaseCommand(it, 0L) })
         update("UPDATE commands SET status = ? WHERE job_id = ?", Status.DONE.name, id)
         records.forEachIndexed { index, (_, record) -> update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, id, index) }
         id
     }
 
-    private fun planRows(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) {
+    private fun planRows(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>) {
         arms.forEachIndexed { index, planned ->
             update(
                 "INSERT INTO arms (job_id, idx, label, arm, sha) VALUES (?, ?, ?, ?, ?)",
@@ -430,7 +444,7 @@ class Store(file: Path) {
     ).use {
         it.setString(1, name)
         it.setString(2, ref)
-        it.setInt(3, experiment.parallel)
+        it.setInt(3, experiment.parallel ?: 0)
         it.setInt(4, experiment.priority)
         it.setLong(5, intervalSec)
         it.setString(6, Json.encodeToString(experiment))
@@ -640,7 +654,7 @@ class Store(file: Path) {
                     Command(
                         rows.getInt("idx"), rows.getString("cmd"), rows.getLong("timeout_sec"),
                         Status.valueOf(rows.getString("status")), rows.intOrNull("exit_code"),
-                        rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
+                        rows.longOrNull("started_at"), rows.longOrNull("finished_at"), rows.getInt("cores"),
                     )
                 }
             }.toList()
