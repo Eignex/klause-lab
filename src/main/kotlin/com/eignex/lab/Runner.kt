@@ -234,7 +234,7 @@ class Runner(private val config: Config, private val store: Store) {
             selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
         }.distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems" }
-        val cases = Experiments.cases(problems.size, arms.size, spec.seeds)
+        val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
         val hours = Experiments.estimateHours(cases, arms, spec.parallel)
         require(spec.confirm || hours <= config.maxExperimentHours) {
             "${cases.size} cases could take %.1f h at ×${spec.parallel}, over the ${config.maxExperimentHours} h limit; ".format(hours) +

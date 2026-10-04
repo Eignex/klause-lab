@@ -66,6 +66,8 @@ data class CaseResult(
     val arm: String,
     val seed: Long? = null,
     val record: JsonElement? = null,
+    /** Which of the identical runs of its (problem, arm, seed) this is, from 0. */
+    val repeat: Int = 0,
 )
 
 /**
@@ -145,8 +147,14 @@ class Store(file: Path) {
             it.execute(
                 """CREATE TABLE IF NOT EXISTS cases (
                     job_id INTEGER NOT NULL, idx INTEGER NOT NULL, problem_idx INTEGER NOT NULL,
-                    arm_idx INTEGER NOT NULL, seed INTEGER, record TEXT, PRIMARY KEY (job_id, idx))""",
+                    arm_idx INTEGER NOT NULL, seed INTEGER, record TEXT, repeat INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (job_id, idx))""",
             )
+            // A database from before repeats gains the column; every case it holds was its seed's only run.
+            val caseColumns = it.executeQuery("PRAGMA table_info(cases)").use { rows ->
+                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
+            }
+            if ("repeat" !in caseColumns) it.execute("ALTER TABLE cases ADD COLUMN repeat INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -254,7 +262,7 @@ class Store(file: Path) {
             statement.executeBatch()
         }
         connection.prepareStatement(
-            "INSERT INTO cases (job_id, idx, problem_idx, arm_idx, seed) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO cases (job_id, idx, problem_idx, arm_idx, seed, repeat) VALUES (?, ?, ?, ?, ?, ?)",
         ).use { statement ->
             cases.forEachIndexed { index, case ->
                 statement.setLong(1, jobId)
@@ -262,6 +270,7 @@ class Store(file: Path) {
                 statement.setInt(3, case.problem)
                 statement.setInt(4, case.arm)
                 statement.setObject(5, case.seed)
+                statement.setInt(6, case.repeat)
                 statement.addBatch()
             }
             statement.executeBatch()
@@ -288,7 +297,7 @@ class Store(file: Path) {
     /** Every case of an experiment in command order, with its problem, arm, status and record. */
     @Synchronized
     fun cases(jobId: Long): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, c.record FROM cases c
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, c.record, c.repeat FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -301,6 +310,7 @@ class Store(file: Path) {
                 CaseResult(
                     rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
                     rows.getString(4), rows.longOrNull("seed"), rows.getString(6)?.let { Json.parseToJsonElement(it) },
+                    rows.getInt(7),
                 )
             }.toList()
         }

@@ -33,6 +33,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   `processors`, `lp`, `presolve`, `fixed`, and `param.<name>` for `--param <name>=<value>`. An arm without a `label` is
   named by the values that set it apart.
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
+- `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
+  measures the machine's timing noise apart from the seed's.
 - `parallel`, `priority` and `confirm` as below.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
@@ -44,7 +46,14 @@ bench result cache is off) and its record lands in the store. `lab cases <id>` l
 
 An experiment's page (its job id) compares the arms:
 
-- each arm's commit, cases done, solved, proven (optima and infeasibility) and errors;
+- each arm's commit, cases done, solved, proven (optima and infeasibility), errors and mean PAR-2 time (an unsolved
+  run charged twice its budget);
+- 95% intervals on solved, PAR-2 and the score, bootstrapped over problems, a problem's seeds and repeats averaged
+  first so each problem counts once;
+- each arm against the first: the geometric mean of its PAR-2 time over the first arm's on the problems either solved,
+  with its interval and a Wilcoxon signed-rank p, and the problems it scored better and worse on, with a sign-test p;
+- noisy problems: an arm's runs of one problem (seeds, repeats) that disagree on the verdict, or whose time to best
+  spreads over 25% of its mean;
 - a pairwise score by the MiniZinc Challenge rule `output/compare.sh` uses: per problem and seed, solved beats
   unsolved, proven beats unproven, then the better objective, and equal outcomes split the point by time;
 - how each arm did against the first, problem by problem;
@@ -201,6 +210,7 @@ pages and files. The live parts refresh in place every 10 s, while a job is unfi
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
+| `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON |
 | `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |

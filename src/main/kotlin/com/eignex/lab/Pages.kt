@@ -140,24 +140,31 @@ private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>
     }
     val labels = arms.map { it.arm.label }
     val comparison = Compare.compare(labels, cases)
+    val stats = Stats.of(labels, cases)
     val seeds = cases.map { it.seed }.distinct().sortedBy { it ?: Long.MIN_VALUE }
+    val repeats = (cases.maxOfOrNull { it.repeat } ?: 0) + 1
     val total = cases.groupBy { it.arm }
     append("<h2>Arms <small>${cases.map { it.problem }.distinct().size} problems")
     if (seeds.size > 1) append(" × ${seeds.size} seeds")
+    if (repeats > 1) append(" × $repeats repeats")
     if (job != null) append(" · <a href=\"/experiments/$job/cases.csv\">cases.csv</a>")
     append("</small></h2>")
     append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
-    append("<th class=\"num\">proven</th><th class=\"num\">errors</th><th class=\"num\">score</th><th>vs ${esc(labels.first())}</th>")
+    append("<th class=\"num\">proven</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th><th class=\"num\">score</th>")
+    append("<th>vs ${esc(labels.first())}</th>")
     append(if (job != null) "<th>bench csv</th></tr>" else "</tr>")
-    for ((planned, summary) in arms.zip(comparison.arms)) {
+    val paired = stats.paired.associateBy { it.label }
+    for ((index, planned) in arms.withIndex()) {
+        val summary = comparison.arms[index]
+        val armStats = stats.arms[index]
         val commit = commitUrl(config.repoUrl, planned.sha)?.let { "<a href=\"$it\">${planned.sha.take(9)}</a>" } ?: planned.sha.take(9)
-        val versus = if (summary.label == labels.first()) "<span class=\"muted\">baseline</span>" else
-            "<span class=\"DONE\">${summary.wins} better</span> · <span class=\"FAILED\">${summary.losses} worse</span> · ${summary.ties} even"
+        val versus = paired[summary.label]?.let(::versus) ?: "<span class=\"muted\">baseline</span>"
         append("<tr><td><b>${esc(summary.label)}</b><br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
         append("<td><code>$commit</code></td><td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
-        append("<td class=\"num\">${summary.solved}</td><td class=\"num\">${summary.proven}</td>")
+        append("<td class=\"num\">${estimate(armStats.solved, "%.1f")}</td><td class=\"num\">${summary.proven}</td>")
         append("<td class=\"num\">${if (summary.errors > 0) "<span class=\"FAILED\">${summary.errors}</span>" else "0"}</td>")
-        append("<td class=\"num\">${"%.1f".format(summary.score)}</td><td>$versus</td>")
+        append("<td class=\"num\">${estimate(armStats.par2, "%.2f")}</td><td class=\"num\">${estimate(armStats.score, "%.1f")}</td>")
+        append("<td>$versus</td>")
         if (job != null) {
             append("<td>")
             append(seeds.joinToString(" ") { seed ->
@@ -169,13 +176,51 @@ private fun experimentSection(config: Config, job: Long?, arms: List<PlannedArm>
         append("</tr>")
     }
     append("</table></div>")
+    append("<p class=\"muted\"><small>Intervals are 95%, bootstrapped over problems, a problem's seeds and repeats averaged. ")
+    append("PAR-2 charges an unsolved run twice its budget. The time ratio is the geometric mean of an arm's PAR-2 time over the ")
+    append("first arm's, on the problems either solved; its p is a Wilcoxon signed-rank test. Better and worse count problems by ")
+    append("the score, with a sign test. p below 0.05 is bold.</small></p>")
     if (comparison.disagreements.isNotEmpty()) {
         append("<h2 class=\"FAILED\">Disagreements <small>${comparison.disagreements.size}</small></h2><ul class=\"error\">")
         for (d in comparison.disagreements) append("<li><code>${esc(name(d.problem))}</code>: ${esc(d.reason)}</li>")
         append("</ul>")
     }
+    if (stats.noise.isNotEmpty()) append(noiseTable(stats.noise))
     append(problemGrid(labels, cases))
 }
+
+/** An arm against the baseline: the time ratio with its interval and test, then better and worse with theirs. */
+private fun versus(p: Paired): String {
+    val ratio = if (p.problems == 0) "<span class=\"muted\">no problem solved by either</span>" else
+        "${"%.2f".format(p.timeRatio.value)}× <small class=\"muted\">${"%.2f".format(p.timeRatio.low)}–${"%.2f".format(p.timeRatio.high)}</small> " +
+            "${pValue(p.wilcoxonP)} <small class=\"muted\">n=${p.problems}</small>"
+    return "$ratio<br><span class=\"DONE\">${p.better} better</span> · <span class=\"FAILED\">${p.worse} worse</span> ${pValue(p.signP)}"
+}
+
+private fun estimate(e: Estimate, format: String) =
+    "${format.format(e.value)} <small class=\"muted\">${format.format(e.low)}–${format.format(e.high)}</small>"
+
+private fun pValue(p: Double): String {
+    val text = if (p < 0.001) "p<0.001" else "p=${"%.3f".format(p)}"
+    return if (p < SIGNIFICANT) "<b>$text</b>" else "<small>$text</small>"
+}
+
+/** Problems whose runs of one arm disagree, the most unsettled first. */
+private fun noiseTable(noise: List<Noise>): String = buildString {
+    append("<h2>Noisy problems <small>${noise.size}: runs that disagree on the verdict, or whose time to best spreads over ")
+    append("25% of its mean</small></h2><div class=\"scroll\"><table><tr><th>problem</th><th>arm</th>")
+    append("<th class=\"num\">runs</th><th class=\"num\">verdicts</th><th class=\"num\">time spread</th></tr>")
+    for (n in noise.take(NOISE_ROWS)) {
+        append("<tr><td><code>${esc(name(n.problem))}</code></td><td>${esc(n.arm)}</td><td class=\"num\">${n.runs}</td>")
+        append("<td class=\"num\">${if (n.verdicts > 1) "<span class=\"FAILED\">${n.verdicts}</span>" else "1"}</td>")
+        append("<td class=\"num\">${"%.0f".format(n.spread * 100)}%</td></tr>")
+    }
+    append("</table></div>")
+    if (noise.size > NOISE_ROWS) append("<p class=\"muted\">${noise.size - NOISE_ROWS} more in cases.csv</p>")
+}
+
+private const val SIGNIFICANT = 0.05
+private const val NOISE_ROWS = 50
 
 /** One row per problem, one cell per arm with its outcome on each seed; the arm that scores best on a row is marked. */
 private fun problemGrid(labels: List<String>, cases: List<CaseResult>): String = buildString {
@@ -190,7 +235,7 @@ private fun problemGrid(labels: List<String>, cases: List<CaseResult>): String =
         val points = labels.associateWith { label ->
             ofProblem.filter { it.arm == label }.sumOf { mine ->
                 val a = Outcome.of(mine.record) ?: return@sumOf 0.0
-                ofProblem.filter { it.arm != label && it.seed == mine.seed }.sumOf { other -> Outcome.of(other.record)?.let { Compare.points(a, it) } ?: 0.0 }
+                ofProblem.filter { it.arm != label && it.seed == mine.seed && it.repeat == mine.repeat }.sumOf { other -> Outcome.of(other.record)?.let { Compare.points(a, it) } ?: 0.0 }
             }
         }
         val best = points.values.maxOrNull()?.takeIf { top -> points.values.any { it < top } }

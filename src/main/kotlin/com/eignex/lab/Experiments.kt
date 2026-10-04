@@ -29,6 +29,8 @@ data class ExperimentSpec(
     val grid: Map<String, List<String>> = emptyMap(),
     /** Solver seeds; empty runs each case once on the bench's fixed seed. */
     val seeds: List<Long> = emptyList(),
+    /** Runs of each (problem, configuration, seed), identical but for the machine's noise, which they measure. */
+    val repeats: Int = 1,
     val parallel: Int = 1,
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
@@ -54,7 +56,7 @@ data class Problem(
 )
 
 /** The case at one index of an experiment's commands. */
-data class Case(val problem: Int, val arm: Int, val seed: Long?)
+data class Case(val problem: Int, val arm: Int, val seed: Long?, val repeat: Int = 0)
 
 object Experiments {
     /** The arms of [spec], in order: each config over the base, crossed with the grid's combinations. Unlabelled
@@ -78,9 +80,9 @@ object Experiments {
      * problem, so drift over the run and a pause part-way spread evenly across the arms instead of favouring the
      * arm that always goes first.
      */
-    fun cases(problems: Int, arms: Int, seeds: List<Long>): List<Case> = (0 until problems).flatMap { problem ->
+    fun cases(problems: Int, arms: Int, seeds: List<Long>, repeats: Int = 1): List<Case> = (0 until problems).flatMap { problem ->
         (0 until arms).map { (it + problem) % arms }.flatMap { arm ->
-            seeds.ifEmpty { listOf(null) }.map { Case(problem, arm, it) }
+            seeds.ifEmpty { listOf(null) }.flatMap { seed -> (0 until repeats).map { Case(problem, arm, seed, it) } }
         }
     }
 
@@ -88,6 +90,7 @@ object Experiments {
     fun validate(spec: ExperimentSpec, maxParallel: Int) {
         require(spec.name.isNotBlank()) { "name is required" }
         require(spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
+        require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }
         require(spec.configs.isNotEmpty()) { "configs must not be empty" }
         require(spec.grid.values.none { it.isEmpty() }) { "every grid axis needs at least one value" }
         require(spec.problems.isNotEmpty()) { "problems must name at least one selection" }
@@ -151,6 +154,7 @@ object Experiments {
     private val PROBLEM_KEYS = setOf("suite", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance")
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed")
     private const val CASE_OVERHEAD_SEC = 120L
+    private const val MAX_REPEATS = 100
     private const val MS_PER_HOUR = 3_600_000.0
 }
 

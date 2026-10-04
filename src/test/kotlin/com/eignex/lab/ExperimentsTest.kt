@@ -82,4 +82,11 @@ class ExperimentsTest {
 
         assertEquals(listOf(listOf(mapOf("suite" to "a")), listOf(mapOf("suite" to "a"), mapOf("suite" to "b", "max" to "5"))), read)
     }
+
+    @Test
+    fun `repeats run back to back within each seed`() {
+        val cases = Experiments.cases(problems = 1, arms = 1, seeds = listOf(7), repeats = 3)
+
+        assertEquals(listOf(7L to 0, 7L to 1, 7L to 2), cases.map { it.seed to it.repeat })
+    }
 }

@@ -13,14 +13,15 @@ object Results {
     /** Every case with a record as one CSV row: the case, its problem and arm, and the record's verdict and times. */
     fun casesCsv(cases: List<CaseResult>): String = buildString {
         appendLine(
-            "index,status,arm,seed,suite,problem,collection,family,format,kind,maximize,feasible,objective,proven," +
+            "index,status,arm,seed,repeat,suite,problem,collection,family,format,kind,maximize,feasible,objective,proven," +
                 "timeToBestMs,timeToFirstFeasibleMs,budgetMs,error",
         )
         for (case in cases) {
             val record = case.record as? JsonObject
             fun field(name: String) = (record?.get(name) as? JsonPrimitive)?.content?.takeUnless { it == "null" }.orEmpty()
             val row = listOf(
-                case.index.toString(), case.status.name, case.arm, case.seed?.toString().orEmpty(), case.problem.suite,
+                case.index.toString(), case.status.name, case.arm, case.seed?.toString().orEmpty(), case.repeat.toString(),
+                case.problem.suite,
                 case.problem.problem, case.problem.collection, case.problem.family, case.problem.format, field("kind"),
                 field("maximize"), field("feasible"), field("objective"), field("proven"), field("timeToBestMs"),
                 field("timeToFirstFeasibleMs"), field("budgetMs"), (field("command") == "ERROR").toString(),
@@ -36,7 +37,7 @@ object Results {
      */
     fun benchCsv(cases: List<CaseResult>, arm: String, seed: Long?): String = buildString {
         appendLine("suite,problem,maximize,objective,feasible,proven,elapsedMs,budgetMs,format,structure,numGlobal,numLinear,boolHeavy,logic")
-        val rows = cases.filter { it.arm == arm && it.seed == seed }
+        val rows = cases.filter { it.arm == arm && it.seed == seed && it.repeat == 0 }
             .mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }
             .sortedWith(compareBy({ it.first.collection }, { it.first.problem }))
         for ((problem, outcome) in rows) {

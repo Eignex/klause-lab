@@ -101,6 +101,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(comparePage(config, jobs, arms, cases), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
+        get("/experiments/{id}/stats") {
+            val id = call.parameters["id"]!!.toLong()
+            call.respond(Stats.of(store.arms(id).map { it.arm.label }, store.cases(id)))
+        }
         get("/experiments/{id}/cases.csv") {
             call.respondText(Results.casesCsv(store.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
         }

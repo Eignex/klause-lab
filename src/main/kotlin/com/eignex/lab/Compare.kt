@@ -87,7 +87,7 @@ object Compare {
     fun compare(labels: List<String>, cases: List<CaseResult>): Comparison {
         val outcomes = cases.mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
         // A (problem, seed) pair is one contest; seeds pair up across arms, so each arm meets the others on equal terms.
-        val contests = outcomes.groupBy { (case, _) -> case.problem to case.seed }
+        val contests = outcomes.groupBy { (case, _) -> Triple(case.problem, case.seed, case.repeat) }
             .mapValues { (_, entries) -> entries.associate { (case, outcome) -> case.arm to outcome } }
         val arms = labels.map { label ->
             val own = outcomes.filter { it.first.arm == label }.map { it.second }
