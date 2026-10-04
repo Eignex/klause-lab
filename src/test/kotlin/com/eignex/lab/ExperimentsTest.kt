@@ -94,4 +94,33 @@ class ExperimentsTest {
     fun `selections interleave so every one is reached early`() {
         assertEquals(listOf("a1", "b1", "c1", "a2", "c2", "a3"), interleave(listOf(listOf("a1", "a2", "a3"), listOf("b1"), listOf("c1", "c2"))))
     }
+
+    @Test
+    fun `the default filter leaves out only what the reference ran and left undecided`() {
+        val decided = Reference("scip", false, 3.0, true, true, 100, 10_000)
+        val undecided = decided.copy(objective = null, feasible = null, proven = false)
+
+        assertEquals(listOf(true, false, true), listOf(decided, undecided, null).map { ReferenceFilterMode.DECIDED.keeps(it) })
+    }
+
+    @Test
+    fun `an experiment that runs the reference solver is not filtered by it`() {
+        val reference = spec(base = mapOf("backend" to "reference"))
+
+        assertEquals(listOf(ReferenceFilterMode.DECIDED, ReferenceFilterMode.ANY),
+            listOf(spec(), reference).map { Experiments.referenceFilter(it, mapOf("suite" to "s")) })
+    }
+
+    @Test
+    fun `a filtered selection is capped per family and in all after filtering`() {
+        val problems = listOf("a" to 1, "a" to 2, "a" to 3, "b" to 1, "b" to 2).map { (f, i) -> Problem("s", "$f$i", family = f) }
+
+        assertEquals(listOf("a1", "b1", "a2"), Experiments.cap(problems, perFamily = 2, max = 3).map { it.problem })
+    }
+
+    @Test
+    fun `a capped selection is asked of the bench without its caps`() {
+        assertEquals(mapOf("suite" to "s", "per-family" to "1000000", "seed" to "1"),
+            Experiments.uncapped(mapOf("suite" to "s", "per-family" to "1", "max" to "20", "seed" to "1")))
+    }
 }

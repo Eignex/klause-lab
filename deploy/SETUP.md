@@ -28,6 +28,12 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `problems` are `klause-bench select` filters: `suite` (required), `kind`, `category`, `tag`, `name`,
   `per-family`, `max`, `seed`, `balance`. A list of such selections pools their problems, each selection capped on
   its own, so `[{"suite": "hakank", "max": "60"}, {"suite": "xcsp3-cop", "max": "60"}]` takes 60 of each.
+- A selection's `reference` decides which problems it keeps by their verdict in the lab's reference results:
+  `decided` (the default) leaves out those the reference ran and left undecided within its budget, since a problem no
+  strong solver settles in seconds says little about klause; `proven` keeps only those it proved; `any` keeps all. A
+  problem with no reference verdict is kept by `decided`. Caps (`per-family`, `max`) count the problems the filter
+  keeps, so a capped selection is filled from the decided ones. An experiment with a `backend=reference` arm defaults
+  to `any`. Planning logs how many problems the filter left out.
 - Each entry of `configs` (default: one empty config) is merged over `base`, then crossed with every combination of
   `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 10000), `backend`, `engine`,
   `processors`, `lp`, `presolve`, `fixed`, and `param.<name>` for `--param <name>=<value>`. An arm without a `label` is

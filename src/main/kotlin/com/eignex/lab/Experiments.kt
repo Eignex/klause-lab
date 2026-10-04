@@ -104,6 +104,11 @@ object Experiments {
             for ((key, value) in selection) {
                 require(key in PROBLEM_KEYS) { "unknown problems key '$key' (have ${PROBLEM_KEYS.sorted()})" }
                 requireValue(key, value)
+                if (key == REFERENCE_KEY) {
+                    require(ReferenceFilterMode.entries.any { it.name.equals(value, ignoreCase = true) }) {
+                        "reference must be one of ${ReferenceFilterMode.entries.map { it.name.lowercase() }}"
+                    }
+                }
             }
         }
         for (arm in arms(spec)) {
@@ -120,7 +125,31 @@ object Experiments {
 
     /** The bench arguments of one problems [selection]. */
     fun selectArgs(selection: Map<String, String>): String =
-        selection.entries.joinToString(" ") { (key, value) -> quote("$key=$value") }
+        selection.filterKeys { it != REFERENCE_KEY }.entries.joinToString(" ") { (key, value) -> quote("$key=$value") }
+
+    /** Whether a selection's caps are applied by the lab, after [mode] filters, rather than by the bench before it. A
+     *  format-balanced selection keeps the bench's caps: the balance is the bench's to strike. */
+    fun refills(mode: ReferenceFilterMode, selection: Map<String, String>): Boolean =
+        mode != ReferenceFilterMode.ANY && ("per-family" in selection || "max" in selection) && "balance" !in selection
+
+    /** [selection] with its caps lifted: no `max`, and a `per-family` too large to bind. A `seed` stays, so the bench
+     *  still orders each family by its seeded shuffle, and the lab's cap takes the head of that order. */
+    fun uncapped(selection: Map<String, String>): Map<String, String> =
+        selection - "max" + if ("per-family" in selection) mapOf("per-family" to UNCAPPED.toString()) else emptyMap()
+
+    /** The bench's caps over [problems] in the bench's order: at most [perFamily] per family, families round-robin, then
+     *  at most [max] in all. */
+    fun cap(problems: List<Problem>, perFamily: Int?, max: Int?): List<Problem> {
+        val families = problems.groupBy { it.suite to it.family }.values.map { if (perFamily == null) it else it.take(perFamily) }
+        val merged = interleave(families)
+        return if (max == null) merged else merged.take(max)
+    }
+
+    /** What a selection's `reference` filter keeps, by default `decided`, or `any` when the experiment itself runs the
+     *  reference solver: its own verdicts are what it is there to produce. */
+    fun referenceFilter(spec: ExperimentSpec, selection: Map<String, String>): ReferenceFilterMode =
+        selection[REFERENCE_KEY]?.let { v -> ReferenceFilterMode.entries.first { it.name.equals(v, ignoreCase = true) } }
+            ?: if (arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) ReferenceFilterMode.ANY else ReferenceFilterMode.DECIDED
 
     /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
      *  `$JOB_DIR/cases/<index>`. */
@@ -160,7 +189,9 @@ object Experiments {
 
     private const val PARAM = "param."
     private val NAME = Regex("[A-Za-z0-9._-]+")
-    private val PROBLEM_KEYS = setOf("suite", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance")
+    private const val REFERENCE_KEY = "reference"
+    private const val UNCAPPED = 1_000_000
+    private val PROBLEM_KEYS = setOf("suite", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed")
     private const val CASE_OVERHEAD_SEC = 120L
     private const val MAX_REPEATS = 100
@@ -173,6 +204,25 @@ object SelectionsSerializer : JsonTransformingSerializer<List<Map<String, String
 ) {
     override fun transformDeserialize(element: JsonElement): JsonElement =
         element as? JsonArray ?: JsonArray(listOf(element))
+}
+
+/**
+ * Which problems a selection keeps by their reference verdict. A problem the reference never ran is kept by [DECIDED]:
+ * there is nothing to judge it by, and dropping it would empty a collection no reference has reached yet.
+ */
+enum class ReferenceFilterMode {
+    /** Leave out the problems the reference ran and left undecided within its budget: too hard to measure klause on. */
+    DECIDED,
+    /** Keep only the problems the reference proved: an optimum, infeasibility, or a satisfied decision problem. */
+    PROVEN,
+    ANY;
+
+    /** Whether to keep a problem whose reference verdict is [reference], null when it has none. */
+    fun keeps(reference: Reference?): Boolean = when (this) {
+        DECIDED -> reference == null || reference.feasible != null
+        PROVEN -> reference != null && reference.proven
+        ANY -> true
+    }
 }
 
 /** Round-robin merge: the first of each list, then the second of each, and so on. */

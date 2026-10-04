@@ -245,12 +245,23 @@ class Runner(private val config: Config, private val store: Store) {
         // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
         val problems = interleave(spec.problems.withIndex().map { (index, problemSelection) ->
             val selection = dir.resolve("selection-$index.jsonl")
+            val mode = Experiments.referenceFilter(spec, problemSelection)
+            // A filtered, capped selection asks the bench for the problems without its caps and caps what the filter
+            // keeps, so the problems the reference never decided are replaced rather than leaving the selection short.
+            val refill = Experiments.refills(mode, problemSelection)
+            val asked = if (refill) Experiments.uncapped(problemSelection) else problemSelection
             sh(log, worktree.resolve("klause-bench").toFile(),
                 "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
-                    "select ${Experiments.selectArgs(problemSelection)} > ${quote(selection.toString())}")
-            selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
+                    "select ${Experiments.selectArgs(asked)} > ${quote(selection.toString())}")
+            val selected = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
+            val references = store.references(selected.map { it.collection to it.problem })
+            val kept = selected.filter { mode.keeps(references[it.collection to it.problem]) }
+            if (kept.size < selected.size) {
+                log(job.id, "selection $index: ${selected.size - kept.size} of ${selected.size} problems left out by reference=${mode.name.lowercase()}")
+            }
+            if (refill) Experiments.cap(kept, problemSelection["per-family"]?.toIntOrNull(), problemSelection["max"]?.toIntOrNull()) else kept
         }).distinctBy { it.suite to it.problem }
-        require(problems.isNotEmpty()) { "the selection matched no problems" }
+        require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
         val parallel = spec.parallel ?: config.maxParallel
         val hours = Experiments.estimateHours(cases, arms, parallel, config.cores)
