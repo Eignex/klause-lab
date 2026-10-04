@@ -215,12 +215,15 @@ enum class ReferenceFilterMode {
     DECIDED,
     /** Keep only the problems the reference proved: an optimum, infeasibility, or a satisfied decision problem. */
     PROVEN,
+    /** Keep only the problems with no reference verdict at all: what a reference run backfills. */
+    MISSING,
     ANY;
 
     /** Whether to keep a problem whose reference verdict is [reference], null when it has none. */
     fun keeps(reference: Reference?): Boolean = when (this) {
         DECIDED -> reference == null || reference.feasible != null
         PROVEN -> reference != null && reference.proven
+        MISSING -> reference == null
         ANY -> true
     }
 }

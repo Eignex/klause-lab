@@ -123,4 +123,11 @@ class ExperimentsTest {
         assertEquals(mapOf("suite" to "s", "per-family" to "1000000", "seed" to "1"),
             Experiments.uncapped(mapOf("suite" to "s", "per-family" to "1", "max" to "20", "seed" to "1")))
     }
+
+    @Test
+    fun `the missing filter keeps only problems without a reference verdict`() {
+        val decided = Reference("scip", false, 3.0, true, true, 100, 10_000)
+
+        assertEquals(listOf(false, true), listOf(decided, null).map { ReferenceFilterMode.MISSING.keeps(it) })
+    }
 }

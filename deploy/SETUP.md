@@ -30,7 +30,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   its own, so `[{"suite": "hakank", "max": "60"}, {"suite": "xcsp3-cop", "max": "60"}]` takes 60 of each.
 - A selection's `reference` decides which problems it keeps by their verdict in the lab's reference results:
   `decided` (the default) leaves out those the reference ran and left undecided within its budget, since a problem no
-  strong solver settles in seconds says little about klause; `proven` keeps only those it proved; `any` keeps all. A
+  strong solver settles in seconds says little about klause; `proven` keeps only those it proved; `missing` keeps only those with no reference verdict, which a reference run
+  uses to backfill; `any` keeps all. A
   problem with no reference verdict is kept by `decided`. Caps (`per-family`, `max`) count the problems the filter
   keeps, so a capped selection is filled from the decided ones. An experiment with a `backend=reference` arm defaults
   to `any`. Planning logs how many problems the filter left out.
