@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlin.math.abs
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -98,15 +99,23 @@ object Compare {
      * Points [a] earns against [b] on one problem, by the MiniZinc Challenge rule `output/compare.sh` uses: the
      * better outcome takes 1, where better is solved over unsolved, then proven over unproven, then the better
      * objective; equal outcomes split the point by time, the faster taking the larger share; two unsolved score 0.
+     * Times closer than [TIE_MS] or [TIE_SHARE] of the slower are a tie at half each: a run to run difference that
+     * small is the machine's noise, and the time split alone would call it a win.
      */
     fun points(a: Outcome, b: Outcome): Double {
         if (a.rank != b.rank) return if (a.rank > b.rank) 1.0 else 0.0
         if (a.rank == 0) return 0.0
         val (oa, ob) = a.objective to b.objective
         if (a.optimize && oa != null && ob != null && oa != ob) return if ((oa > ob) == a.maximize) 1.0 else 0.0
-        val total = a.timeMs + b.timeMs
-        return if (total == 0L) 0.5 else b.timeMs.toDouble() / total
+        if (abs(a.timeMs - b.timeMs) <= maxOf(TIE_MS, (TIE_SHARE * maxOf(a.timeMs, b.timeMs)).toLong())) return 0.5
+        return b.timeMs.toDouble() / (a.timeMs + b.timeMs)
     }
+
+    /** Times this close (ms) are a tie, however short the runs. */
+    const val TIE_MS = 250L
+
+    /** Times within this share of the slower are a tie, however long the runs. */
+    const val TIE_SHARE = 0.1
 
     /** Totals, pairwise scores and disagreements over [cases] of the arms named in [labels], in that order. */
     fun compare(labels: List<String>, cases: List<CaseResult>): Comparison {

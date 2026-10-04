@@ -26,7 +26,7 @@ class CompareTest {
 
     @Test
     fun `equal outcomes split the point by time`() {
-        assertEquals(0.75, Compare.points(outcome(true, 5.0, timeMs = 100), outcome(true, 5.0, timeMs = 300)))
+        assertEquals(0.75, Compare.points(outcome(true, 5.0, timeMs = 1000), outcome(true, 5.0, timeMs = 3000)))
     }
 
     @Test
@@ -81,5 +81,15 @@ class CompareTest {
         val record = """{"kind":"satisfy","feasible":false,"proven":true,"budgetMs":30000,"stats":{"solveTime":"0.09"}}"""
 
         assertEquals(90L, Outcome.of(Json.parseToJsonElement(record))?.timeMs)
+    }
+
+    @Test
+    fun `times within the noise are a tie`() {
+        assertEquals(
+            listOf(0.5, 0.5, 0.5),
+            listOf(360L to 350L, 1220L to 1100L, 30_000L to 27_500L).map { (a, b) ->
+                Compare.points(outcome(true, 5.0, timeMs = a), outcome(true, 5.0, timeMs = b))
+            },
+        )
     }
 }

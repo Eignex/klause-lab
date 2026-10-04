@@ -32,7 +32,7 @@ class StatsTest {
 
     @Test
     fun `an arm twice as slow on every problem has a time ratio of two and a small p`() {
-        val cases = (0 until 20).flatMap { listOf(case("a", it, 100L + it), case("b", it, 2 * (100L + it))) }
+        val cases = (0 until 20).flatMap { listOf(case("a", it, 1000L + it), case("b", it, 2 * (1000L + it))) }
 
         val paired = Stats.of(listOf("a", "b"), cases).paired.single()
 

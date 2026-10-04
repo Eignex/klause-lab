@@ -189,7 +189,8 @@ private fun experimentSection(
     append("</table></div>")
     append("<p class=\"muted\"><small>Intervals are 95%, bootstrapped over problems, a problem's seeds and repeats averaged. ")
     append("PAR-2 charges an unsolved run twice its budget. The time ratio is the geometric mean of an arm's PAR-2 time over the ")
-    append("first arm's, on the problems either solved; its p is a Wilcoxon signed-rank test. Better and worse count problems by ")
+    append("first arm's, on the problems either solved; its p is a Wilcoxon signed-rank test. Equal results whose times differ by ")
+    append("less than 0.25 s or 10% are a tie. Better and worse count problems by ")
     append("the score, with a sign test. p below 0.05 is bold.</small></p>")
     if (comparison.disagreements.isNotEmpty()) {
         append("<h2 class=\"FAILED\">Disagreements <small>${comparison.disagreements.size}</small></h2><ul class=\"error\">")
