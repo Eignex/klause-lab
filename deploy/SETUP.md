@@ -135,18 +135,25 @@ deploy/lab fetch 7           # download jobs/7/ to ./lab-jobs/7 over HTTP; bench
 deploy/lab cancel 7
 ```
 
-The browser page at `http://<server>:8420/` refreshes every 10 s and shows the queue, the running command, and
-links to its live output.
+The browser page at `http://<server>:8420/` shows the running and queued jobs, with each queued job's place in line
+and the commands running now, then the schedules and the job history. The history filters by text and by state, a
+job's name links to all its runs (a schedule's runs included), and `older` pages back past the newest 200. A job's
+id opens its page: settings, the setup and job logs, every command with its exit code and output, and, while the job
+is unfinished, pause/resume, priority, parallel and cancel. A job that ran every command but saw some fail reads
+`DONE · N failed`, which links to just the failed commands. The live parts refresh in place every 10 s, while a job
+is unfinished.
 
 ## API
 
 | method | path | |
 | --- | --- | --- |
-| `POST` | `/jobs` | `{"name", "ref", "commands": [{"cmd", "timeoutSec"?}]}` → `{"id"}` |
-| `GET` | `/jobs`, `/jobs/{id}` | job and command states |
+| `POST` | `/jobs` | `{"name", "ref", "commands": [{"cmd", "timeoutSec"?}]}` → `{"id"}`; a branch or tag origin lacks is refused |
+| `GET` | `/jobs`, `/jobs/{id}` | job and command states; `/jobs` takes `?limit`, `?before=<id>` and `?name` |
 | `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its command tree killed |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
 | `GET` | `/health` | queue counts and the koblas report |
+
+A browser (`Accept: text/html`) gets a page for `/jobs/{id}` and `/jobs/{id}/files`; `?json` gets the data instead.
 
 The API has no authentication. Keep it on the LAN.

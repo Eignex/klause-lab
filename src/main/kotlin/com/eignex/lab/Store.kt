@@ -149,13 +149,25 @@ class Store(file: Path) {
         id
     }
 
+    /** The newest jobs first, older than [before] when given. A [name] keeps that name's jobs and the ones its
+     *  schedule queued as `name@sha`. */
     @Synchronized
-    fun jobs(limit: Int = 200): List<Job> = connection.prepareStatement(
-        "SELECT * FROM jobs ORDER BY id DESC LIMIT ?",
-    ).use { statement ->
-        statement.setInt(1, limit)
-        statement.executeQuery().use { rows -> generateSequence { if (rows.next()) job(rows) else null }.toList() }
-    }.map { it.copy(commands = commands(it.id)) }
+    fun jobs(limit: Int = 200, before: Long? = null, name: String? = null): List<Job> = jobsWhere(
+        "id < ? AND (? IS NULL OR name = ? OR name LIKE ? ESCAPE '\\') ORDER BY id DESC LIMIT ?",
+        before ?: Long.MAX_VALUE, name, name, name?.let { likeEscape(it) + "@%" }, limit,
+    )
+
+    /** Every queued or running job, oldest first. */
+    @Synchronized
+    fun active(): List<Job> = jobsWhere("status IN (?, ?) ORDER BY id", Status.QUEUED.name, Status.RUNNING.name)
+
+    private fun jobsWhere(where: String, vararg values: Any?): List<Job> =
+        connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
+            values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
+            statement.executeQuery().use { rows -> generateSequence { if (rows.next()) job(rows) else null }.toList() }
+        }.map { it.copy(commands = commands(it.id)) }
+
+    private fun likeEscape(text: String) = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     @Synchronized
     fun job(id: Long): Job? = connection.prepareStatement("SELECT * FROM jobs WHERE id = ?").use { statement ->

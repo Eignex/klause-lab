@@ -172,7 +172,8 @@ class Runner(private val config: Config, private val store: Store) {
             sh(log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
         }
         sh(log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
-        val sha = capture(config.mirror.toFile(), "git rev-parse --verify ${quote(job.ref + "^{commit}")}")
+        val sha = runCatching { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(job.ref + "^{commit}")}") }
+            .getOrElse { error("unknown ref: ${job.ref} (not on origin; is it pushed?)") }
         removeWorktree(job.id)
         config.worktree(job.id).parent.createDirectories()
         sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(config.worktree(job.id).toString())} $sha")

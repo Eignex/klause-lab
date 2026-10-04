@@ -163,4 +163,35 @@ class StoreTest {
             listOf(schedule.commands, schedule.lastSha, schedule.lastJob, schedule.priority),
         )
     }
+
+    @Test
+    fun `a page of jobs starts below the id it is given`() {
+        val store = store()
+        val ids = List(5) { store.create("j$it", "main", listOf("true" to 10L)) }
+
+        assertEquals(listOf(ids[2], ids[1]), store.jobs(2, before = ids[3]).map { it.id })
+    }
+
+    @Test
+    fun `a name keeps its own jobs and the ones its schedule queued`() {
+        val store = store()
+        val plain = store.create("sweep", "main", listOf("true" to 10L))
+        val scheduled = store.create("sweep@abc123", "abc123", listOf("true" to 10L))
+        store.create("sweeper", "main", listOf("true" to 10L))
+        store.create("s_eep@abc123", "main", listOf("true" to 10L))
+
+        assertEquals(listOf(scheduled, plain), store.jobs(name = "sweep").map { it.id })
+    }
+
+    @Test
+    fun `the active jobs are the queued and running ones`() {
+        val store = store()
+        val running = store.create("a", "main", listOf("true" to 10L))
+        val cancelled = store.create("b", "main", listOf("true" to 10L))
+        val queued = store.create("c", "main", listOf("true" to 10L))
+        store.next()
+        store.requestCancel(cancelled)
+
+        assertEquals(listOf(running, queued), store.active().map { it.id })
+    }
 }

@@ -3,12 +3,16 @@ package com.eignex.lab
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.http.withCharset
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
+import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.request.accept
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
@@ -16,13 +20,13 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.io.File
 import java.io.RandomAccessFile
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import java.util.concurrent.TimeUnit
 
 @Serializable
 data class CommandSpec(val cmd: String, val timeoutSec: Long? = null)
@@ -71,20 +75,29 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         exception<IllegalArgumentException> { call, e -> call.respondText(e.message ?: "bad request", status = HttpStatusCode.BadRequest) }
     }
     routing {
-        get("/") { call.respondText(page(store.jobs()), ContentType.Text.Html) }
+        get("/") {
+            val before = call.parameters["before"]?.toLong()
+            val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
+            val history = store.jobs(PAGE_SIZE, before, name)
+            val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name)
+            call.respondText(page, ContentType.Text.Html)
+        }
         get("/health") {
             val jobs = store.jobs()
             val queued = jobs.count { it.status == Status.QUEUED }
             val running = jobs.count { it.status == Status.RUNNING }
             call.respond(Health(true, queued, running, freeBytes(config.dataDir), host))
         }
-        get("/jobs") { call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: 200)) }
+        get("/jobs") {
+            call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: 200, call.parameters["before"]?.toLong(), call.parameters["name"]))
+        }
         post("/jobs") {
             val spec = call.receive<JobSpec>()
             require(spec.name.isNotBlank()) { "name is required" }
             require(spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "ref is required" }
             require(spec.commands.isNotEmpty()) { "at least one command is required" }
             requireParallel(spec.parallel, config)
+            requireRef(spec.ref, config)
             val id = store.create(
                 spec.name,
                 spec.ref,
@@ -96,7 +109,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/jobs/{id}") {
             val job = store.job(call.parameters["id"]!!.toLong())
-            if (job == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(job)
+            when {
+                job == null -> call.respond(HttpStatusCode.NotFound, "no such job")
+                call.wantsHtml() -> call.respondText(jobPage(config, job, "failed" in call.parameters), ContentType.Text.Html)
+                else -> call.respond(job)
+            }
         }
         // A long poll: the answer comes when the job ends, or after timeoutSec with the job as it stands, so a
         // client learns of the end without polling over the network.
@@ -151,6 +168,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             require(spec.commands.isNotEmpty()) { "at least one command is required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             requireParallel(spec.parallel, config)
+            requireRef(spec.ref, config)
             val id = store.createSchedule(spec.name, spec.ref, spec.commands, spec.parallel, spec.priority, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
@@ -160,9 +178,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")
         }
         get("/jobs/{id}/files") {
-            val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile()
+            val id = call.parameters["id"]!!.toLong()
+            val root = config.jobDir(id).toFile()
             val files = root.walkTopDown().filter { it.isFile }.map { FileEntry(it.relativeTo(root).path, it.length()) }.sortedBy { it.path }.toList()
-            call.respond(files)
+            if (call.wantsHtml()) call.respondText(filesPage(id, files), ContentType.Text.Html) else call.respond(files)
         }
         get("/jobs/{id}/files/{path...}") {
             val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile().canonicalFile
@@ -172,6 +191,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             when {
                 !file.isFile -> call.respond(HttpStatusCode.NotFound, "no such file")
                 tail != null -> call.respondText(tail(file, tail), ContentType.Text.Plain)
+                // Logs and command output open in the browser instead of downloading.
+                file.extension in TEXT_FILES -> call.respond(LocalFileContent(file, ContentType.Text.Plain.withCharset(Charsets.UTF_8)))
                 else -> call.respondFile(file)
             }
         }
@@ -183,6 +204,36 @@ private const val DEFAULT_WAIT_SEC = 600L
 private const val MAX_WAIT_SEC = 3600L
 private const val WAIT_POLL_MS = 2000L
 private const val MIN_SCHEDULE_SEC = 60L
+private const val PAGE_SIZE = 200
+private const val LS_REMOTE_SEC = 15L
+private val TEXT_FILES = setOf("", "out", "err", "log", "txt", "sha", "pid")
+
+/** A browser asks for a page; `?json` or any API client gets the data. */
+private fun ApplicationCall.wantsHtml() = "json" !in parameters && request.accept()?.contains("text/html") == true
+
+/**
+ * Refuse a branch or tag name origin does not have, so a typo fails at submit and not later in the queue. A commit
+ * hash or a ref expression cannot be checked without fetching, and an origin that does not answer proves nothing:
+ * those pass, and the runner reports them when it resolves the ref.
+ */
+private suspend fun requireRef(ref: String, config: Config) {
+    if (!Regex("[A-Za-z0-9._/-]+").matches(ref) || Regex("[0-9a-f]{7,40}").matches(ref)) return
+    val known = withContext(Dispatchers.IO) {
+        val process = ProcessBuilder("git", "ls-remote", config.repoUrl, "refs/heads/$ref", "refs/tags/$ref")
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" }
+            .start()
+        // Waited on before reading: the answer is a line or two, well inside the pipe buffer, and a hung remote
+        // must not hold the request past the timeout.
+        if (!process.waitFor(LS_REMOTE_SEC, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            true
+        } else {
+            process.exitValue() != 0 || process.inputStream.bufferedReader().readText().isNotBlank()
+        }
+    }
+    require(known) { "unknown ref: $ref (no such branch or tag on origin; is it pushed?)" }
+}
 
 private fun requireParallel(parallel: Int, config: Config) =
     require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }
@@ -194,47 +245,4 @@ private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").
     val buffer = ByteArray((raf.length() - start).toInt())
     raf.readFully(buffer)
     String(buffer)
-}
-
-private val clock = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
-
-private fun time(millis: Long?) = millis?.let { clock.format(Instant.ofEpochMilli(it)) } ?: ""
-
-private fun duration(from: Long?, to: Long?): String {
-    if (from == null) return ""
-    val seconds = ((to ?: now()) - from) / 1000
-    return "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
-}
-
-private fun esc(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
-
-private fun page(jobs: List<Job>): String = buildString {
-    append(
-        """<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="10">
-        <meta name="viewport" content="width=device-width, initial-scale=1"><title>klause lab</title><style>
-        body{font:14px system-ui,sans-serif;margin:16px;background:#fff;color:#111}
-        table{border-collapse:collapse;width:100%}td,th{padding:4px 8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
-        code{font-size:12px;word-break:break-all}.RUNNING{color:#0550ae}.DONE{color:#1a7f37}.FAILED{color:#cf222e}.CANCELLED{color:#888}
-        @media (prefers-color-scheme: dark){body{background:#111;color:#ddd}td,th{border-color:#333}.RUNNING{color:#6cb6ff}}
-        </style></head><body><h1>klause lab</h1><table><tr><th>id</th><th>name</th><th>ref</th><th>status</th>
-        <th>progress</th><th>current</th><th>created</th><th>elapsed</th></tr>""",
-    )
-    for (job in jobs) {
-        val current = job.commands.firstOrNull { it.status == Status.RUNNING }
-        append("<tr><td><a href=\"/jobs/${job.id}\">${job.id}</a></td><td>${esc(job.name)}</td>")
-        append("<td><code>${esc(job.ref)}${job.sha?.let { " " + it.take(9) } ?: ""}</code></td>")
-        val flags = listOfNotNull("paused".takeIf { job.paused }, "priority ${job.priority}".takeIf { job.priority != 0 })
-        val note = (flags + listOfNotNull(job.error)).joinToString("<br>") { "<small>${esc(it)}</small>" }
-        append("<td class=\"${job.status}\">${job.status}${if (note.isEmpty()) "" else "<br>$note"}</td>")
-        append("<td>${job.done}/${job.commands.size}${if (job.parallel > 1) " ×${job.parallel}" else ""}${if (job.failed > 0) "<br><small>${job.failed} failed</small>" else ""}</td>")
-        append("<td>")
-        if (current != null) {
-            append("<code>${esc(current.cmd.take(160))}</code><br>${duration(current.startedAt, null)} ")
-            append("<a href=\"/jobs/${job.id}/files/${current.index}.out?tail=4000\">out</a> ")
-            append("<a href=\"/jobs/${job.id}/files/${current.index}.err?tail=4000\">err</a>")
-        }
-        append("</td><td>${time(job.createdAt)}</td><td>${duration(job.startedAt, job.finishedAt)}</td>")
-        append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
-    }
-    append("</table></body></html>")
 }
