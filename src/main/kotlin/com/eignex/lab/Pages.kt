@@ -711,8 +711,7 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
         append(" <small><a href=\"/trend${query("name" to schedule.name)}\">trend</a></small>")
         if (schedule.priority != 0) append("<br><small>priority ${schedule.priority}</small>")
         append("</td><td><code>${esc(schedule.ref)}</code></td><td>${span(schedule.intervalSec)}</td>")
-        val arms = schedule.experiment?.let { Experiments.arms(it).size.toString() }
-            ?: "<span class=\"muted\" title=\"from before experiments; queues nothing\">legacy</span>"
+        val arms = Experiments.arms(schedule.experiment).size
         append("<td>$arms${if (schedule.parallel > 1) " ×${schedule.parallel}" else ""}</td><td>")
         if (schedule.lastJob != null) {
             append("<a href=\"/jobs/${schedule.lastJob}\">${schedule.lastJob}</a> <code>${schedule.lastSha?.take(9) ?: ""}</code>")

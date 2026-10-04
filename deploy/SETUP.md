@@ -68,10 +68,7 @@ An experiment's page (its job id) compares the arms:
 problems paired by suite and name. A scheduled run's page links to the comparison with the run before it.
 
 `lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as the bench writes
-`output/<config>.csv`, for `bench credit` and the `output/` scripts. `lab import <job>` turns the bench records an older
-job collected (each directory directly under its `collected/klause-bench/output/`, records of the job's own commit
-only) into a finished experiment with one arm per directory. Bench records carry no suite, so imported problems are
-named by problem alone.
+`output/<config>.csv`, for `bench credit` and the `output/` scripts.
 
 ## Reference results
 
@@ -101,8 +98,7 @@ waits its turn by priority like any other. A scheduled experiment's configs name
 nothing. A check asks origin for a branch or tag's commit with `git ls-remote`, one small request, and fetches only when
 it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab check <id>` makes a schedule due at once,
 and the runner checks it within 10 s, which is also what a push hook would call. `lab schedules` lists them with the
-last commit and job; `lab unschedule <id>` removes one. A schedule from
-before experiments queues nothing and shows as legacy.
+last commit and job; `lab unschedule <id>` removes one.
 
 ## Crash safety
 
@@ -223,8 +219,7 @@ in line and the cases running now, then the schedules and the history. The histo
 job's name links to all its runs (a schedule's runs included), and `older` pages back past the newest 200. An
 id opens its page: settings, the setup and job logs, the comparison above, every case's command with its exit code
 and output, and, while it is unfinished, pause/resume, priority, parallel and cancel. One that ran every case but
-saw some fail reads `DONE · N failed`, which links to just the failed cases. Jobs from before experiments keep their
-pages and files. The live parts refresh in place every 10 s, while a job is unfinished.
+saw some fail reads `DONE · N failed`, which links to just the failed cases. The live parts refresh in place every 10 s, while a job is unfinished.
 
 ## API
 
@@ -244,7 +239,6 @@ pages and files. The live parts refresh in place every 10 s, while a job is unfi
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
 | `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
-| `POST` | `/jobs/{id}/import` | an ended job's collected bench records as a new, finished experiment → `{"id"}` |
 | `GET` | `/trend[?name=<schedule>]` | a schedule's runs over its commits; the first schedule without a name |
 | `GET` | `/references[?q=<text>]` | reference coverage, or the results matching text |
 | `POST` | `/references/import[?ref=<ref>]` | load the bench's reference tables at ref → `{"sha", "read", "changed"}` |

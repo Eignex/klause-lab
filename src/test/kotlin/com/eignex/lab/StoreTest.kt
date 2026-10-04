@@ -86,26 +86,6 @@ class StoreTest {
     }
 
     @Test
-    fun `a database from before the parallel column runs its jobs serially`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        DriverManager.getConnection("jdbc:sqlite:$file").use { old ->
-            old.createStatement().use {
-                it.execute(
-                    """CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL,
-                        sha TEXT, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0,
-                        setup_done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, started_at INTEGER,
-                        finished_at INTEGER, error TEXT)""",
-                )
-                it.execute("INSERT INTO jobs (name, ref, status, created_at) VALUES ('old', 'main', 'QUEUED', 0)")
-            }
-        }
-
-        val job = Store(file).jobs().single()
-
-        assertEquals(1, job.parallel)
-    }
-
-    @Test
     fun `the highest priority queued job is taken first`() {
         val store = store()
         store.create("low", "main", listOf("true" to 10L))

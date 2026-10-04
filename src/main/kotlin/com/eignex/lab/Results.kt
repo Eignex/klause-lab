@@ -1,14 +1,9 @@
 package com.eignex.lab
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import java.io.File
 
-/** Experiment results out of the lab as CSV, and the records of jobs from before experiments into it. */
+/** Experiment results out of the lab as CSV. */
 object Results {
     /** Every case with a record as one CSV row: the case, its problem and arm, and the record's verdict and times. */
     fun casesCsv(cases: List<CaseResult>): String = buildString {
@@ -52,48 +47,7 @@ object Results {
         }
     }
 
-    /**
-     * Make a finished experiment of the bench records [job] collected: each directory directly under its collected
-     * `klause-bench/output/` is an arm, each record there a case. Only records the job's own commit wrote are taken,
-     * since that directory also carries results committed to the repository. Records carry no suite, so the
-     * imported problems are named by problem alone.
-     */
-    fun import(config: Config, store: Store, job: Job): Long {
-        require(job.status !in ACTIVE) { "job ${job.id} has not ended" }
-        require(job.experiment == null) { "job ${job.id} is already an experiment" }
-        val sha = requireNotNull(job.sha) { "job ${job.id} never checked a commit out" }
-        val output = config.jobDir(job.id).resolve(COLLECTED_OUTPUT).toFile()
-        val arms = output.listFiles { f -> f.isDirectory }.orEmpty().sortedBy { it.name }.mapNotNull { dir ->
-            val records = dir.listFiles { f -> f.isFile && f.extension == "json" }.orEmpty().sortedBy { it.name }
-                .mapNotNull { file -> record(file)?.takeIf { it.string("gitSha") == sha }?.let { file to it } }
-            records.takeIf { it.isNotEmpty() }?.let { dir.name to it }
-        }
-        require(arms.isNotEmpty()) { "job ${job.id} collected no bench records of its commit $sha" }
-        val problems = arms.flatMap { (_, records) -> records.map { it.second.string("problem").orEmpty() } }.distinct()
-            .map { Problem(suite = "", problem = it) }
-        val index = problems.withIndex().associate { (i, p) -> p.problem to i }
-        val cases = arms.withIndex().flatMap { (armIndex, arm) ->
-            arm.second.map { (file, record) ->
-                Triple(Case(index.getValue(record.string("problem").orEmpty()), armIndex, null), record.toString(), file)
-            }
-        }
-        val spec = ExperimentSpec("${job.name} (imported)", listOf(mapOf("imported-from" to job.id.toString())))
-        return store.importExperiment(
-            spec.name, job.ref, sha, spec,
-            arms.map { (label, _) -> PlannedArm(Arm(label, mapOf("ref" to sha)), sha) },
-            problems,
-            cases.map { it.first to it.second },
-            cases.map { "imported from job ${job.id}: ${it.third.relativeTo(output)}" },
-        )
-    }
-
-    private fun record(file: File): JsonObject? = runCatching { Json.parseToJsonElement(file.readText()).jsonObject }
-        .getOrNull()?.takeIf { it["problem"] != null && it["budgetMs"]?.jsonPrimitive?.longOrNull != null }
-
-    private fun JsonObject.string(name: String) = (this[name] as? JsonPrimitive)?.content
-
     private fun cell(text: String) =
         if (text.any { it == ',' || it == '"' || it == '\n' }) "\"" + text.replace("\"", "\"\"") + "\"" else text
 
-    private const val COLLECTED_OUTPUT = "collected/klause-bench/output"
 }

@@ -82,7 +82,6 @@ class Runner(private val config: Config, private val store: Store) {
         claimed.commands.filter { it.status == Status.RUNNING }.forEach { killOrphan(dir.resolve("${it.index}.pid")) }
         store.requeueInterrupted(claimed.id)
         var job = checkNotNull(store.job(claimed.id))
-        requireNotNull(job.experiment) { "jobs of shell commands are no longer run: submit an experiment" }
         if (!job.setupDone || !config.worktree(job.id).exists()) {
             val sha = setupExperiment(job, dir)
             store.setup(job.id, sha)
@@ -177,7 +176,6 @@ class Runner(private val config: Config, private val store: Store) {
         val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
         for (schedule in due) {
             store.scheduleChecked(schedule.id, now())
-            if (schedule.experiment == null) continue
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
             val advertised = advertised(schedule.ref)
             if (advertised != null && advertised == schedule.lastSha) continue

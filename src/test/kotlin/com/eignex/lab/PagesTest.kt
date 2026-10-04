@@ -89,21 +89,6 @@ class PagesTest {
     }
 
     @Test
-    fun `a job of shell commands can no longer be submitted`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
-        testApplication {
-            application { api(config, Store(config.database), host) }
-
-            val response = client.post("/jobs") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"name":"x","ref":"main","commands":[{"cmd":"true"}]}""")
-            }
-
-            assertEquals(HttpStatusCode.Gone, response.status)
-        }
-    }
-
-    @Test
     fun `two experiments compare side by side with each arm named by its job`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.database)

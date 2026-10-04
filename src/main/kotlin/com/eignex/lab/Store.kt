@@ -78,14 +78,13 @@ data class CaseResult(
 /**
  * An experiment queued again whenever [ref] moves: the runner checks it at most every [intervalSec], and queues a run
  * with every arm at the commit the ref resolves to when that commit is not [lastSha] and the previous run has ended.
- * A schedule from before experiments has no [experiment] and queues nothing.
  */
 @Serializable
 data class Schedule(
     val id: Long,
     val name: String,
     val ref: String,
-    val experiment: ExperimentSpec?,
+    val experiment: ExperimentSpec,
     val parallel: Int,
     val priority: Int,
     val intervalSec: Long,
@@ -114,36 +113,21 @@ class Store(file: Path) {
                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL, sha TEXT,
                     status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0,
                     setup_done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, started_at INTEGER,
-                    finished_at INTEGER, error TEXT)""",
+                    finished_at INTEGER, error TEXT, parallel INTEGER NOT NULL DEFAULT 1,
+                    priority INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, experiment TEXT)""",
             )
             it.execute(
                 """CREATE TABLE IF NOT EXISTS commands (
                     job_id INTEGER NOT NULL, idx INTEGER NOT NULL, cmd TEXT NOT NULL, timeout_sec INTEGER NOT NULL,
                     status TEXT NOT NULL, exit_code INTEGER, started_at INTEGER, finished_at INTEGER,
-                    PRIMARY KEY (job_id, idx))""",
+                    cores INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (job_id, idx))""",
             )
             it.execute(
                 """CREATE TABLE IF NOT EXISTS schedules (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL, commands TEXT NOT NULL,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL,
                     parallel INTEGER NOT NULL, priority INTEGER NOT NULL, interval_sec INTEGER NOT NULL,
-                    last_sha TEXT, last_job INTEGER, checked_at INTEGER)""",
+                    last_sha TEXT, last_job INTEGER, checked_at INTEGER, experiment TEXT NOT NULL)""",
             )
-            // A database created before the column existed gains it here; every older job ran serially.
-            val columns = it.executeQuery("PRAGMA table_info(jobs)").use { rows ->
-                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
-            }
-            if ("parallel" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN parallel INTEGER NOT NULL DEFAULT 1")
-            if ("priority" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
-            if ("paused" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
-            if ("experiment" !in columns) it.execute("ALTER TABLE jobs ADD COLUMN experiment TEXT")
-            val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { rows ->
-                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
-            }
-            if ("cores" !in commandColumns) it.execute("ALTER TABLE commands ADD COLUMN cores INTEGER NOT NULL DEFAULT 1")
-            val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { rows ->
-                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
-            }
-            if ("experiment" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN experiment TEXT")
             it.execute(
                 """CREATE TABLE IF NOT EXISTS arms (
                     job_id INTEGER NOT NULL, idx INTEGER NOT NULL, label TEXT NOT NULL, arm TEXT NOT NULL,
@@ -167,11 +151,6 @@ class Store(file: Path) {
                     PRIMARY KEY (collection, problem, solver))""",
             )
             it.execute("CREATE TABLE IF NOT EXISTS reference_imports (sha TEXT NOT NULL, at INTEGER NOT NULL, rows INTEGER NOT NULL)")
-            // A database from before repeats gains the column; every case it holds was its seed's only run.
-            val caseColumns = it.executeQuery("PRAGMA table_info(cases)").use { rows ->
-                generateSequence { if (rows.next()) rows.getString("name") else null }.toSet()
-            }
-            if ("repeat" !in caseColumns) it.execute("ALTER TABLE cases ADD COLUMN repeat INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -439,7 +418,7 @@ class Store(file: Path) {
     /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
     @Synchronized
     fun createSchedule(name: String, ref: String, experiment: ExperimentSpec, intervalSec: Long): Long = connection.prepareStatement(
-        "INSERT INTO schedules (name, ref, commands, parallel, priority, interval_sec, experiment) VALUES (?, ?, '[]', ?, ?, ?, ?)",
+        "INSERT INTO schedules (name, ref, parallel, priority, interval_sec, experiment) VALUES (?, ?, ?, ?, ?, ?)",
         java.sql.Statement.RETURN_GENERATED_KEYS,
     ).use {
         it.setString(1, name)
@@ -459,7 +438,7 @@ class Store(file: Path) {
                 if (!rows.next()) return@generateSequence null
                 Schedule(
                     rows.getLong("id"), rows.getString("name"), rows.getString("ref"),
-                    rows.getString("experiment")?.let { Json.decodeFromString<ExperimentSpec>(it) },
+                    Json.decodeFromString<ExperimentSpec>(rows.getString("experiment")),
                     rows.getInt("parallel"), rows.getInt("priority"),
                     rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
                     rows.longOrNull("checked_at"),

@@ -84,9 +84,6 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/jobs") {
             call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: 200, call.parameters["before"]?.toLong(), call.parameters["name"]))
         }
-        post("/jobs") {
-            call.respond(HttpStatusCode.Gone, "jobs of shell commands are gone: submit an experiment (POST /experiments)")
-        }
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
             val spec = call.receive<ExperimentSpec>()
@@ -98,7 +95,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
-            val schedules = store.schedules().filter { it.experiment != null }.map { it.name }
+            val schedules = store.schedules().map { it.name }
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()
             val runs = name?.let { Trend.runs(store, it) }.orEmpty()
             if (call.wantsHtml()) {
@@ -158,11 +155,6 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val arm = requireNotNull(call.parameters["arm"]) { "arm is required" }
             val seed = call.parameters["seed"]?.toLong()
             call.respondText(Results.benchCsv(store.cases(call.parameters["id"]!!.toLong()), arm, seed), ContentType.Text.CSV)
-        }
-        // The records an older job collected, made into a finished experiment the comparison reads.
-        post("/jobs/{id}/import") {
-            val job = store.job(call.parameters["id"]!!.toLong())
-            if (job == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(HttpStatusCode.Created, Created(Results.import(config, store, job)))
         }
         get("/jobs/{id}") {
             val job = store.job(call.parameters["id"]!!.toLong())

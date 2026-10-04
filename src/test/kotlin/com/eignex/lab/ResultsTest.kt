@@ -18,26 +18,4 @@ class ResultsTest {
         assertEquals(listOf("xcsp3-cop-22to25,Rack-1,false,7.0,true,true,40,1000,,,,,,", ""), csv.drop(1))
     }
 
-    @Test
-    fun `an import takes the records the job's own commit wrote, one arm per config`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
-        val store = Store(config.database)
-        val old = store.create("sweep", "main", listOf("true" to 10L))
-        store.next()
-        store.setup(old, "abc")
-        store.finish(old, Status.DONE)
-        val output = config.jobDir(old).resolve("collected/klause-bench/output").toFile()
-        fun write(config: String, problem: String, sha: String) = output.resolve(config).apply { mkdirs() }.resolve("$problem.json")
-            .writeText("""{"problem":"$problem","kind":"satisfy","feasible":true,"budgetMs":1000,"gitSha":"$sha"}""")
-        write("klause-cp", "p", "abc")
-        write("klause-ls", "p", "abc")
-        write("klause-ls", "q", "older")
-
-        val imported = Results.import(config, store, checkNotNull(store.job(old)))
-
-        assertEquals(
-            listOf("klause-cp" to "p", "klause-ls" to "p"),
-            store.cases(imported).map { it.arm to it.problem.problem },
-        )
-    }
 }
