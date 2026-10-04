@@ -91,6 +91,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
+        get("/trend") {
+            val name = requireNotNull(call.parameters["name"]?.takeIf { it.isNotBlank() }) { "name=<schedule> is required" }
+            val runs = Trend.runs(store, name)
+            if (call.wantsHtml()) call.respondText(trendPage(name, runs, config.repoUrl), ContentType.Text.Html) else call.respond(runs)
+        }
         get("/compare") {
             val ids = requireNotNull(call.parameters["jobs"]) { "jobs=<id>,<id>… is required" }.split(',').map { it.trim().toLong() }
             require(ids.size in 2..MAX_COMPARED) { "compare 2 to $MAX_COMPARED experiments" }

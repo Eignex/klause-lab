@@ -1,5 +1,7 @@
 package com.eignex.lab
 
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.net.URLEncoder
 import java.time.Instant
@@ -97,7 +99,8 @@ internal fun jobPage(
     }
     if (previous != null) {
         append("<p>Previous run of this schedule: <a href=\"/jobs/$previous\">$previous</a> · ")
-        append("<a href=\"/compare?jobs=$previous,${job.id}\">compare with it</a></p>")
+        append("<a href=\"/compare?jobs=$previous,${job.id}\">compare with it</a> · ")
+        append("<a href=\"/trend${query("name" to job.name.substringBefore('@'))}\">trend</a></p>")
     }
     if (job.experiment != null) append(experimentSection(config, job.id, arms, cases))
     if (!showCommands) {
@@ -290,6 +293,218 @@ internal fun comparePage(config: Config, jobs: List<Job>, arms: List<PlannedArm>
     append("</body></html>")
 }
 
+/**
+ * How a schedule's runs moved over its commits: solved and proven shares with the solved interval, PAR-2 time, and
+ * solved share per suite, against commit or date. The runs ride in the page as JSON; a small script draws the charts.
+ */
+internal fun trendPage(name: String, runs: List<TrendRun>, repoUrl: String): String = buildString {
+    append(head("$name trend · klause lab", live = runs.any { !it.finished }))
+    append("<header><h1><a href=\"/\">klause lab</a> / trend of ${esc(name)}</h1>")
+    append("<p class=\"muted\">${runs.size} runs · <a href=\"/${query("name" to name)}\">its jobs</a></p></header>")
+    if (runs.isEmpty()) {
+        append("<p class=\"muted\">No run of this schedule has results yet.</p></body></html>")
+        return@buildString
+    }
+    append("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">x-axis</span>")
+    append("<button class=\"chip on\" data-x=\"commit\">commit</button><button class=\"chip\" data-x=\"date\">date</button></div>")
+    append("<h2>Solved and proven <small>% of the problems each run ran; band: 95% interval of solved</small></h2>")
+    append("<div class=\"legend\"><span><i style=\"background:var(--series-1)\"></i>solved</span>")
+    append("<span><i style=\"background:var(--series-2)\"></i>proven</span>")
+    append("<span><i class=\"hollow\"></i>run still going</span></div>")
+    append("<div class=\"chart\" id=\"chart-solved\"></div>")
+    append("<h2>PAR-2 time <small>mean seconds per problem, an unsolved one charged twice its budget; lower is better</small></h2>")
+    append("<div class=\"chart\" id=\"chart-par2\"></div>")
+    append("<h2>Solved by suite <small>% of each suite's problems</small></h2><div class=\"multiples\" id=\"suites\"></div>")
+    append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
+    append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
+    append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th></tr>")
+    for (run in runs.asReversed()) {
+        val commit = commitUrl(repoUrl, run.sha)?.let { "<a href=\"$it\">${run.sha.take(9)}</a>" } ?: run.sha.take(9)
+        append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a>${if (run.finished) "" else " <small class=\"muted\">running</small>"}</td>")
+        append("<td><code>$commit</code></td><td>${ago(run.at)}</td><td class=\"num\">${run.problems}</td>")
+        append("<td class=\"num\">${percent(run.solved.value)} <small class=\"muted\">${percent(run.solved.low)}–${percent(run.solved.high)}</small></td>")
+        append("<td class=\"num\">${percent(run.proven)}</td><td class=\"num\">${run.unsupported}</td><td class=\"num\">${run.errors}</td>")
+        append("<td class=\"num\">${"%.2f".format(run.par2.value)}</td></tr>")
+    }
+    append("</table></div><div id=\"tip\" class=\"tip\" hidden></div>")
+    append("<script type=\"application/json\" id=\"trend-data\">")
+    append(Json.encodeToString(runs).replace("</", "<\\/"))
+    append("</script>")
+    append(SCRIPT)
+    append(TREND_SCRIPT)
+    append("</body></html>")
+}
+
+private fun percent(share: Double) = "%.1f%%".format(share * 100)
+
+/** Draws the trend charts from the embedded runs, and redraws them when the x-axis or the width changes. */
+private const val TREND_SCRIPT = """<script>
+(function () {
+  const runs = JSON.parse(document.getElementById('trend-data').textContent);
+  const tip = document.getElementById('tip');
+  const NS = 'http://www.w3.org/2000/svg';
+  let xMode = 'commit';
+  try { xMode = localStorage.getItem('trend-x') || 'commit'; } catch (e) {}
+  const suites = Array.from(new Set(runs.flatMap(function (r) { return Object.keys(r.suites); }))).sort();
+
+  function el(name, attrs, parent) {
+    const node = document.createElementNS(NS, name);
+    for (const k in attrs) node.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  function pct(v) { return (v * 100).toFixed(1) + '%'; }
+  function when(ms) {
+    const d = new Date(ms);
+    function two(n) { return String(n).padStart(2, '0'); }
+    return two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
+  }
+  function niceMax(v) {
+    if (!(v > 0)) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+    return 10 * p;
+  }
+
+  // series: [{name, color, value(run), band(run)?, label?}]; y: {max, ticks, fmt}
+  function draw(host, series, y, opts) {
+    host.innerHTML = '';
+    const W = Math.max(host.clientWidth, 240), H = opts.height;
+    const m = {l: 46, r: opts.endLabels ? 92 : 36, t: 10, b: 28};
+    const pw = W - m.l - m.r, ph = H - m.t - m.b;
+    const svg = el('svg', {width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': opts.title}, host);
+    const times = runs.map(function (r) { return r.at; });
+    const t0 = Math.min.apply(null, times), t1 = Math.max.apply(null, times);
+    function x(i) {
+      if (runs.length === 1) return m.l + pw / 2;
+      if (xMode === 'date') return m.l + (t1 === t0 ? pw / 2 : (runs[i].at - t0) / (t1 - t0) * pw);
+      return m.l + i / (runs.length - 1) * pw;
+    }
+    // Lines join runs left to right: by time on the date axis, where runs need not have ended in job order.
+    const order = runs.map(function (r, i) { return i; });
+    if (xMode === 'date') order.sort(function (a, b) { return runs[a].at - runs[b].at; });
+    function yy(v) { return m.t + ph - Math.min(v, y.max) / y.max * ph; }
+    for (const t of y.ticks) {
+      el('line', {x1: m.l, x2: m.l + pw, y1: yy(t), y2: yy(t), class: 'grid'}, svg);
+      el('text', {x: m.l - 6, y: yy(t) + 4, 'text-anchor': 'end', class: 'tick'}, svg).textContent = y.fmt(t);
+    }
+    if (xMode === 'date') {
+      const n = Math.max(2, Math.min(5, runs.length, Math.floor(pw / 110)));
+      for (let k = 0; k < n; k++) {
+        const t = n === 1 ? t0 : t0 + (t1 - t0) * k / (n - 1);
+        const px = t1 === t0 ? m.l + pw / 2 : m.l + (t - t0) / (t1 - t0) * pw;
+        el('text', {x: px, y: H - 8, 'text-anchor': 'middle', class: 'tick'}, svg).textContent = when(t);
+      }
+    } else {
+      const every = Math.max(1, Math.ceil(runs.length / Math.max(1, Math.floor(pw / 64))));
+      runs.forEach(function (r, i) {
+        if (i % every === 0 || i === runs.length - 1) {
+          el('text', {x: x(i), y: H - 8, 'text-anchor': 'middle', class: 'tick mono'}, svg).textContent = r.sha.slice(0, 7);
+        }
+      });
+    }
+    for (const s of series) {
+      if (s.band) {
+        const pts = order.map(function (i) { const b = s.band(runs[i]); return b ? [x(i), yy(b[0]), yy(b[1])] : null; }).filter(Boolean);
+        if (pts.length > 1) {
+          const d = 'M' + pts.map(function (p) { return p[0] + ',' + p[2]; }).join('L') +
+            'L' + pts.slice().reverse().map(function (p) { return p[0] + ',' + p[1]; }).join('L') + 'Z';
+          el('path', {d: d, fill: s.color, 'fill-opacity': 0.1, stroke: 'none'}, svg);
+        }
+      }
+      const pts = order.map(function (i) { const v = s.value(runs[i]); return v == null ? null : [x(i), yy(v), runs[i]]; }).filter(Boolean);
+      if (pts.length > 1) {
+        el('path', {d: 'M' + pts.map(function (p) { return p[0] + ',' + p[1]; }).join('L'), fill: 'none', stroke: s.color,
+          'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
+      }
+      for (const p of pts) {
+        el('circle', {cx: p[0], cy: p[1], r: 4, fill: p[2].finished ? s.color : 'var(--bg)', stroke: p[2].finished ? 'var(--bg)' : s.color,
+          'stroke-width': 2}, svg);
+      }
+      if (opts.endLabels && pts.length) {
+        const last = pts[pts.length - 1];
+        el('text', {x: last[0] + 10, y: last[1] + 4, class: 'endlabel'}, svg).textContent = s.name + ' ' + y.fmt(s.value(last[2]));
+      }
+    }
+    const cross = el('line', {y1: m.t, y2: m.t + ph, class: 'cross', visibility: 'hidden'}, svg);
+    const hit = el('rect', {x: m.l - 8, y: 0, width: pw + 16, height: H, fill: 'transparent'}, svg);
+    function nearest(evt) {
+      const box = svg.getBoundingClientRect();
+      const px = evt.clientX - box.left;
+      let best = 0;
+      runs.forEach(function (r, i) { if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i; });
+      return best;
+    }
+    hit.addEventListener('pointermove', function (evt) {
+      const i = nearest(evt);
+      cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+      show(runs[i], evt, opts.suite);
+    });
+    hit.addEventListener('pointerleave', function () { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
+    hit.addEventListener('click', function (evt) { location.href = '/jobs/' + runs[nearest(evt)].job; });
+    hit.style.cursor = 'pointer';
+  }
+
+  function show(r, evt, suite) {
+    const rows = [
+      ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
+      ['solved', pct(r.solved.value) + ' (' + pct(r.solved.low) + '–' + pct(r.solved.high) + ')'],
+      ['proven', pct(r.proven)], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
+      ['unsupported', r.unsupported], ['errors', r.errors], ['problems', r.problems],
+    ];
+    if (suite && r.suites[suite]) rows.unshift([suite, pct(r.suites[suite].solved) + ' of ' + r.suites[suite].problems]);
+    tip.innerHTML = rows.map(function (kv) { return '<div><span>' + kv[0] + '</span><b>' + kv[1] + '</b></div>'; }).join('');
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let left = evt.pageX + 14, top = evt.pageY - h - 10;
+    if (left + w > window.scrollX + document.documentElement.clientWidth - 8) left = evt.pageX - w - 14;
+    if (top < window.scrollY + 8) top = evt.pageY + 16;
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+  }
+
+  function render() {
+    const percentAxis = {max: 1, ticks: [0, 0.25, 0.5, 0.75, 1], fmt: function (v) { return Math.round(v * 100) + '%'; }};
+    draw(document.getElementById('chart-solved'), [
+      {name: 'solved', color: 'var(--series-1)', value: function (r) { return r.solved.value; },
+        band: function (r) { return [r.solved.low, r.solved.high]; }},
+      {name: 'proven', color: 'var(--series-2)', value: function (r) { return r.proven; }},
+    ], percentAxis, {height: 260, endLabels: true, title: 'Solved and proven share per run'});
+    const top = niceMax(Math.max.apply(null, runs.map(function (r) { return r.par2.high; })));
+    draw(document.getElementById('chart-par2'), [
+      {name: 'PAR-2', color: 'var(--series-1)', value: function (r) { return r.par2.value; },
+        band: function (r) { return [r.par2.low, r.par2.high]; }},
+    ], {max: top, ticks: [0, top / 4, top / 2, 3 * top / 4, top], fmt: function (v) { return (Math.round(v * 10) / 10) + 's'; }},
+      {height: 220, endLabels: false, title: 'PAR-2 seconds per run'});
+    const grid = document.getElementById('suites');
+    grid.innerHTML = '';
+    for (const s of suites) {
+      const cell = document.createElement('div');
+      cell.className = 'multiple';
+      cell.innerHTML = '<div class="mtitle">' + s + '</div>';
+      const plot = document.createElement('div');
+      cell.appendChild(plot);
+      grid.appendChild(cell);
+      draw(plot, [{name: s, color: 'var(--series-1)', value: function (r) { return r.suites[s] ? r.suites[s].solved : null; }}],
+        {max: 1, ticks: [0, 0.5, 1], fmt: function (v) { return Math.round(v * 100) + '%'; }},
+        {height: 130, endLabels: false, title: s + ' solved share per run', suite: s});
+    }
+  }
+
+  document.querySelectorAll('[data-x]').forEach(function (b) {
+    b.classList.toggle('on', b.dataset.x === xMode);
+    b.addEventListener('click', function () {
+      xMode = b.dataset.x;
+      try { localStorage.setItem('trend-x', xMode); } catch (e) {}
+      document.querySelectorAll('[data-x]').forEach(function (o) { o.classList.toggle('on', o === b); });
+      render();
+    });
+  });
+  let pending = null;
+  window.addEventListener('resize', function () { clearTimeout(pending); pending = setTimeout(render, 120); });
+  render();
+})();
+</script>"""
+
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
     append(head("$jobId files · klause lab", live = false))
     append("<header><h1><a href=\"/\">klause lab</a> / <a href=\"/jobs/$jobId\">$jobId</a> / files</h1></header>")
@@ -376,6 +591,7 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
     append("<th>last run</th><th>checked</th><th>next check</th></tr>")
     for (schedule in schedules) {
         append("<tr><td><a class=\"plain\" href=\"/${query("name" to schedule.name)}\">${esc(schedule.name)}</a>")
+        append(" <small><a href=\"/trend${query("name" to schedule.name)}\">trend</a></small>")
         if (schedule.priority != 0) append("<br><small>priority ${schedule.priority}</small>")
         append("</td><td><code>${esc(schedule.ref)}</code></td><td>${span(schedule.intervalSec)}</td>")
         val arms = schedule.experiment?.let { Experiments.arms(it).size.toString() }
@@ -488,9 +704,9 @@ private fun head(title: String, live: Boolean) = """<!doctype html><html><head><
 
 private const val STYLE = """
 :root{--bg:#fff;--fg:#111;--muted:#666;--line:#ddd;--soft:#f3f3f3;--link:#0969da;
---run:#0550ae;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--off:#888}
+--run:#0550ae;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--off:#888;--series-1:#2a78d6;--series-2:#eb6834}
 @media (prefers-color-scheme: dark){:root{--bg:#111;--fg:#ddd;--muted:#999;--line:#333;--soft:#222;--link:#58a6ff;
---run:#6cb6ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--off:#888}}
+--run:#6cb6ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--off:#888;--series-1:#3987e5;--series-2:#d95926}}
 body{font:14px system-ui,sans-serif;margin:16px;background:var(--bg);color:var(--fg)}
 a{color:var(--link)}a.plain{color:inherit;text-decoration:none}a.plain:hover{text-decoration:underline}
 h1{margin:0 0 4px}h1 a{color:inherit;text-decoration:none}h2{font-size:16px;margin:24px 0 8px}h2 small{font-weight:normal}
@@ -511,6 +727,17 @@ dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:1
 table.grid td.best{background:color-mix(in srgb,var(--ok) 14%,transparent)}ul.error{color:var(--bad)}
 pre.error{color:var(--bad);white-space:pre-wrap;word-break:break-all;background:var(--soft);padding:8px}
 .pager{margin-top:12px}
+.chart svg,.multiple svg{display:block}.chart{width:100%}
+.grid{stroke:var(--line);stroke-width:1}.tick{fill:var(--muted);font-size:11px}.tick.mono{font-family:ui-monospace,monospace}
+.endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin:-4px 0 6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.legend i.hollow{border:2px solid var(--series-1);width:6px;height:6px}
+.multiples{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px 20px}
+.mtitle{font-size:12px;color:var(--muted);margin-bottom:2px}
+.tip{position:absolute;z-index:5;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;
+font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px}
+.tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted)}
 """
 
 /** Filtering, actions and a refresh that swaps the live parts in place, so scrolling, a selection and a half-typed
