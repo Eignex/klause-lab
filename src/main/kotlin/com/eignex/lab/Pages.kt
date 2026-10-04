@@ -616,29 +616,24 @@ internal fun referencesPage(
     if (coverage.isEmpty()) append("<p class=\"muted\">No reference results yet.</p>")
     append("<div class=\"scroll\"><table><tr><th>collection</th><th>solver</th><th class=\"num\">problems</th>")
     append("<th class=\"num\">decided</th><th class=\"num\">proven</th><th class=\"num\">infeasible</th><th>updated</th></tr>")
-    // A family of many small collections reads as one row until it is opened.
-    val groups = shown.groupBy { c -> COLLAPSED_FAMILIES.firstOrNull { c.collection.startsWith("$it-") } }
+    // A family of collections reads as one row until it is opened; each family renders as a block where its first
+    // member sorts, with its members right under it.
+    val families = shown.groupBy { c -> FAMILIES.firstOrNull { (_, member) -> member(c.collection) }?.first }
+    val drawn = HashSet<String>()
     for (c in shown) {
-        val family = COLLAPSED_FAMILIES.firstOrNull { c.collection.startsWith("$it-") }
-        val members = groups[family].orEmpty()
-        if (family != null && members.size > 1) {
-            if (c != members.first()) {
-                append("<tr data-in=\"$family\" hidden>")
-            } else {
-                append("<tr class=\"family\" onclick=\"document.querySelectorAll('tr[data-in=$family]').forEach(function (r) { r.hidden = !r.hidden; })\">")
-                append("<td>▸ <b>$family</b> <small class=\"muted\">${members.size} collections</small></td>")
-                append("<td>${esc(members.map { it.solver }.distinct().joinToString())}</td><td class=\"num\">${members.sumOf { it.rows }}</td>")
-                append("<td class=\"num\">${members.sumOf { it.decided }}</td><td class=\"num\">${members.sumOf { it.proven }}</td>")
-                append("<td class=\"num\">${members.sumOf { it.infeasible }}</td><td>${ago(members.maxOf { it.updatedAt })}</td></tr>")
-                append("<tr data-in=\"$family\" hidden>")
-            }
-        } else {
-            append("<tr>")
+        val family = FAMILIES.firstOrNull { (_, member) -> member(c.collection) }?.first
+        val members = families[family].orEmpty()
+        if (family == null || members.size < 2) {
+            append("<tr>${coverageCells(c)}</tr>")
+            continue
         }
-        val link = "/references${query("collection" to c.collection, "solver" to c.solver)}"
-        append("<td><a class=\"plain\" href=\"$link\">${esc(c.collection)}</a></td><td>${esc(c.solver)}</td><td class=\"num\">${c.rows}</td>")
-        append("<td class=\"num\">${c.decided}</td><td class=\"num\">${c.proven}</td><td class=\"num\">${c.infeasible}</td>")
-        append("<td>${ago(c.updatedAt)}</td></tr>")
+        if (!drawn.add(family)) continue
+        append("<tr class=\"family\" onclick=\"document.querySelectorAll('tr[data-in=$family]').forEach(function (r) { r.hidden = !r.hidden; })\">")
+        append("<td>▸ <b>$family</b> <small class=\"muted\">${members.size} collections</small></td>")
+        append("<td>${esc(members.map { it.solver }.distinct().joinToString())}</td><td class=\"num\">${members.sumOf { it.rows }}</td>")
+        append("<td class=\"num\">${members.sumOf { it.decided }}</td><td class=\"num\">${members.sumOf { it.proven }}</td>")
+        append("<td class=\"num\">${members.sumOf { it.infeasible }}</td><td>${ago(members.maxOf { it.updatedAt })}</td></tr>")
+        for (member in members) append("<tr data-in=\"$family\" hidden>${coverageCells(member)}</tr>")
     }
     append("</table></div>")
     append(SCRIPT)
@@ -650,8 +645,20 @@ internal const val SEARCH_LIMIT = 200
 /** Test fixtures, not benchmarks: kept in the store, left out of the coverage view. */
 private val HIDDEN_COLLECTIONS = listOf("klause-bench/smoke-corpus/")
 
-/** Families of many small collections that coverage folds into one expandable row. */
-private val COLLAPSED_FAMILIES = listOf("satlib")
+/** Families of collections that coverage folds into one expandable row: a name and which collections it holds. */
+private val FAMILIES: List<Pair<String, (String) -> Boolean>> = listOf(
+    "satlib" to { it.startsWith("satlib-") },
+    "smtlib" to { it.startsWith("smtlib-") },
+    "pb" to { it.startsWith("pb-") || it.startsWith("pb07-") },
+)
+
+/** One collection's coverage cells: the collection (linked to its results), solver, and counts. */
+private fun coverageCells(c: ReferenceCoverage): String {
+    val link = "/references${query("collection" to c.collection, "solver" to c.solver)}"
+    return "<td><a class=\"plain\" href=\"$link\">${esc(c.collection)}</a></td><td>${esc(c.solver)}</td>" +
+        "<td class=\"num\">${c.rows}</td><td class=\"num\">${c.decided}</td><td class=\"num\">${c.proven}</td>" +
+        "<td class=\"num\">${c.infeasible}</td><td>${ago(c.updatedAt)}</td>"
+}
 
 private fun problemLink(collection: String, problem: String) = "/problem${query("collection" to collection, "problem" to problem)}"
 
