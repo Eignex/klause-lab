@@ -449,6 +449,15 @@ class Store(file: Path) {
     @Synchronized
     fun deleteSchedule(id: Long): Boolean = update("DELETE FROM schedules WHERE id = ?", id) == 1
 
+    /** Forget an ended job: its row, its commands and, for an experiment, its arms, problems and cases. False when
+     *  there is no such job or it has not ended, since the runner may still be writing it. */
+    @Synchronized
+    fun deleteJob(id: Long): Boolean = transaction {
+        val deleted = update("DELETE FROM jobs WHERE id = ? AND status NOT IN (?, ?)", id, Status.QUEUED.name, Status.RUNNING.name) == 1
+        if (deleted) for (table in listOf("commands", "arms", "problems", "cases")) update("DELETE FROM $table WHERE job_id = ?", id)
+        deleted
+    }
+
     /** Make schedule [id] due, so the runner checks it at once; false when there is no such schedule. */
     @Synchronized
     fun checkNow(id: Long): Boolean = update("UPDATE schedules SET checked_at = NULL WHERE id = ?", id) == 1

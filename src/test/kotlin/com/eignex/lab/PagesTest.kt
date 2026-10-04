@@ -120,4 +120,25 @@ class PagesTest {
             assertContains(page, "<th>${ids[0]} base</th><th>${ids[1]} base</th>")
         }
     }
+
+    @Test
+    fun `deleting an ended job removes it and its files but a running one stays`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.database)
+        val ended = store.create("old", "main", listOf("true" to 1L))
+        store.next()
+        store.finish(ended, Status.CANCELLED)
+        val running = store.create("now", "main", listOf("true" to 1L))
+        store.next()
+        config.jobDir(ended).toFile().apply { mkdirs() }.resolve("0.out").writeText("x")
+        testApplication {
+            application { api(config, store, host) }
+
+            val statuses = listOf(ended, running).map { client.post("/jobs/$it/delete").status }
+
+            assertEquals(listOf(HttpStatusCode.OK, HttpStatusCode.Conflict), statuses)
+            assertEquals(listOf(running), store.jobs().map { it.id })
+            assertFalse(config.jobDir(ended).toFile().exists())
+        }
+    }
 }

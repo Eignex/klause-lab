@@ -163,6 +163,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 CancelOutcome.MISSING -> call.respond(HttpStatusCode.NotFound, "no such job")
             }
         }
+        // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
+        post("/jobs/{id}/delete") {
+            val id = call.parameters["id"]!!.toLong()
+            if (!store.deleteJob(id)) {
+                call.respond(HttpStatusCode.Conflict, "no such job, or it has not ended")
+            } else {
+                val work = config.worktree(id).toFile()
+                (work.parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList() + config.jobDir(id).toFile())
+                    .forEach { deleteTree(it.toPath()) }
+                call.respond(HttpStatusCode.OK, "deleted")
+            }
+        }
         post("/jobs/{id}/parallel") {
             val spec = call.receive<ParallelSpec>()
             requireParallel(spec.parallel, config)
