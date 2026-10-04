@@ -23,6 +23,8 @@ data class Outcome(
     val unsupported: String? = null,
     /** Why the problem never reached the solver: it did not compile or parse. */
     val loadError: String? = null,
+    /** The solver's own `solveTime` statistic, in ms. */
+    val solveTimeMs: Long? = null,
 ) {
     /** Solved beats unsolved, and proven (an optimum, or infeasibility) beats merely solved. */
     val rank: Int get() = when {
@@ -31,8 +33,12 @@ data class Outcome(
         else -> 1
     }
 
-    /** The time a comparison charges: to the best solution when there is one, else the whole budget. */
-    val timeMs: Long get() = if (rank > 0) timeToBestMs ?: budgetMs else budgetMs
+    /**
+     * The time a comparison charges a decided run: to its best solution, or, for a proof without one (an infeasibility
+     * proof has no solution), the solve time the solver reported. Only an undecided run, or a decided one that
+     * reported no time at all, is charged the whole budget, so a fast refutation never reads as a timeout.
+     */
+    val timeMs: Long get() = if (rank > 0) timeToBestMs ?: solveTimeMs ?: budgetMs else budgetMs
 
     companion object {
         fun of(record: JsonElement?): Outcome? {
@@ -49,8 +55,12 @@ data class Outcome(
                 error = field("command")?.content == "ERROR",
                 unsupported = stat(fields, "unsupported"),
                 loadError = stat(fields, "loadError"),
+                solveTimeMs = stat(fields, "solveTime")?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
+                    ?.let { (it * MS_PER_S).toLong() },
             )
         }
+
+        private const val MS_PER_S = 1000.0
 
         private fun stat(fields: JsonObject, name: String): String? =
             ((fields["stats"] as? JsonObject)?.get(name) as? JsonPrimitive)?.content

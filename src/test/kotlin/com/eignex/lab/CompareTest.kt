@@ -75,4 +75,11 @@ class CompareTest {
 
         assertEquals(listOf(1, 1, 0), listOf(a.unsupported, a.errors, a.solved))
     }
+
+    @Test
+    fun `a proof of infeasibility is timed by its solve time and not the budget`() {
+        val record = """{"kind":"satisfy","feasible":false,"proven":true,"budgetMs":30000,"stats":{"solveTime":"0.09"}}"""
+
+        assertEquals(90L, Outcome.of(Json.parseToJsonElement(record))?.timeMs)
+    }
 }
