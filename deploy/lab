@@ -5,6 +5,7 @@
 #   lab parallel <id> <n>                                    let a job run n commands at once, also while it runs
 #   lab priority <id> <n>                                    reorder a queued job; a running one yields to a higher one
 #   lab pause <id> | lab resume <id>                         hold a job; a running one stops between its commands
+#   lab wait <id>...                                         block until every job given has ended; prints each end
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> <n> [out|err]
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
@@ -33,6 +34,14 @@ parallel) jq -n --argjson parallel "$2" '{parallel: $parallel}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/parallel"; echo ;;
 priority) jq -n --argjson priority "$2" '{priority: $priority}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/priority"; echo ;;
+wait)
+  for id in "$@"; do
+    while :; do
+      # The server holds the request until the job ends; a dropped connection is simply retried.
+      status=$(curl -fsS --max-time 660 "$url/jobs/$id/wait?timeoutSec=600" | jq -r .status) || { sleep 10; continue; }
+      case "$status" in DONE | FAILED | CANCELLED) echo -e "$id\t$status"; break ;; esac
+    done
+  done ;;
 pause) curl -sS -X POST "$url/jobs/$1/pause"; echo ;;
 resume) curl -sS -X POST "$url/jobs/$1/resume"; echo ;;
 tail) curl -fsS "$url/jobs/$1/files/$2.${3:-out}?tail=${TAIL_BYTES:-8000}" ;;

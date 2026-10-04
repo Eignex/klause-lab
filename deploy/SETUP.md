@@ -115,6 +115,10 @@ a higher-priority job is waiting; if so it starts no more, lets its running comm
 queue with its worktree and finished commands kept, resuming at its next command when it is taken again. `lab resume
 <id>` releases a paused job.
 
+`lab wait <id>...` returns once every listed job has ended, printing each one's final status. The server holds each
+request open until its job ends (`GET /jobs/<id>/wait`), so a waiting client makes no repeated requests; run it in the
+background to be told when a job is done.
+
 ```sh
 cat > sweep.txt <<'EOF'
 ./gradlew :klause-bench:bench --max-workers=1 --args="solve suite=mzn-bench per-family=1 max=50 seed=1"

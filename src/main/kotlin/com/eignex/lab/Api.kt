@@ -16,6 +16,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import java.io.File
 import java.io.RandomAccessFile
@@ -87,6 +88,25 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val job = store.job(call.parameters["id"]!!.toLong())
             if (job == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(job)
         }
+        // A long poll: the answer comes when the job ends, or after timeoutSec with the job as it stands, so a
+        // client learns of the end without polling over the network.
+        get("/jobs/{id}/wait") {
+            val id = call.parameters["id"]!!.toLong()
+            val timeoutSec = (call.parameters["timeoutSec"]?.toLong() ?: DEFAULT_WAIT_SEC).coerceIn(1, MAX_WAIT_SEC)
+            val deadline = now() + timeoutSec * 1000
+            while (true) {
+                val job = store.job(id)
+                if (job == null) {
+                    call.respond(HttpStatusCode.NotFound, "no such job")
+                    break
+                }
+                if (job.status in ENDED || now() >= deadline) {
+                    call.respond(job)
+                    break
+                }
+                delay(WAIT_POLL_MS)
+            }
+        }
         post("/jobs/{id}/cancel") {
             when (store.requestCancel(call.parameters["id"]!!.toLong())) {
                 CancelOutcome.CANCELLED -> call.respond(HttpStatusCode.OK, "cancelled before it started")
@@ -133,6 +153,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
     }
 }
+
+private val ENDED = setOf(Status.DONE, Status.FAILED, Status.CANCELLED)
+private const val DEFAULT_WAIT_SEC = 600L
+private const val MAX_WAIT_SEC = 3600L
+private const val WAIT_POLL_MS = 2000L
 
 private fun requireParallel(parallel: Int, config: Config) =
     require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }
