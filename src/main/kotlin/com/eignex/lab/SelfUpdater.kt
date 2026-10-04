@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import java.io.File
 import java.nio.file.Path
+import kotlin.system.exitProcess
 
 /**
  * Keeps the lab on the newest klause-lab commit. Between jobs, at most every [intervalMs], it fetches [source], the
@@ -15,6 +16,7 @@ class SelfUpdater(
     private val log: File,
     private val clock: () -> Long = System::currentTimeMillis,
     private val exec: (dir: File, cmd: List<String>, log: File?) -> Pair<Int, String> = ::execute,
+    private val restart: () -> Unit = { exitProcess(EX_RESTART) },
 ) {
     private var lastCheck: Long? = null
 
@@ -29,6 +31,13 @@ class SelfUpdater(
         if (head.isEmpty() || upstream.isEmpty() || head == upstream) return
         println("self-update: ${head.take(9)} -> ${upstream.take(9)}")
         val exit = exec(dir, listOf("bash", "deploy/update.sh"), log).first
+        if (exit == 0) {
+            // update.sh restarts the services, but this process can outlive the signal and would keep running the
+            // old release; exiting non-zero makes the service manager start it again on the new one.
+            println("self-update: restarting on the new release")
+            restart()
+            return
+        }
         println("self-update failed (exit $exit), staying on the running release; see ${log.name}")
     }
 }
@@ -40,3 +49,6 @@ private fun execute(dir: File, cmd: List<String>, log: File?): Pair<Int, String>
     val out = if (log == null) process.inputStream.bufferedReader().readText() else ""
     return process.waitFor() to out
 }
+
+// A non-zero exit, so launchd and systemd (Restart=on-failure) start the runner again.
+private const val EX_RESTART = 75

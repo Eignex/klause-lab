@@ -19,8 +19,11 @@ class SelfUpdaterTest {
         }
     }
 
-    private fun updater(git: FakeGit, now: () -> Long = { 0L }) =
-        SelfUpdater(Files.createTempDirectory("src"), 300_000, File.createTempFile("update", ".log"), now, git::exec)
+    private var restarts = 0
+
+    private fun updater(git: FakeGit, now: () -> Long = { 0L }) = SelfUpdater(
+        Files.createTempDirectory("src"), 300_000, File.createTempFile("update", ".log"), now, git::exec, { restarts++ },
+    )
 
     @Test
     fun `a checkout behind its upstream runs the update script`() {
@@ -51,5 +54,14 @@ class SelfUpdaterTest {
         updater.maybeUpdate()
 
         assertEquals(1, git.calls.count { it.contains("fetch") })
+    }
+
+    @Test
+    fun `a successful update restarts the runner`() {
+        val git = FakeGit(head = "aaa", upstream = "bbb")
+
+        updater(git).maybeUpdate()
+
+        assertEquals(1, restarts)
     }
 }
