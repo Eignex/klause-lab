@@ -663,6 +663,8 @@ private val FAMILIES: List<Pair<String, (String) -> Boolean>> = listOf(
     "satlib" to { it.startsWith("satlib-") },
     "smtlib" to { it.startsWith("smtlib-") },
     "pb" to { it.startsWith("pb-") || it.startsWith("pb07-") },
+    "orlib" to { it.startsWith("orlib-") },
+    "miplib" to { it.startsWith("miplib") },
 )
 
 /** One collection's coverage cells: the collection (linked to its results), solver, and counts. */
