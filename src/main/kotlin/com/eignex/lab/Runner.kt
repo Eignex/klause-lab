@@ -242,13 +242,14 @@ class Runner(private val config: Config, private val store: Store) {
         val worktree = experimentWorktree(job.id, primary, primary)
         val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
         // Each selection is capped on its own; a problem two selections share is solved once.
-        val problems = spec.problems.withIndex().flatMap { (index, problemSelection) ->
+        // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
+        val problems = interleave(spec.problems.withIndex().map { (index, problemSelection) ->
             val selection = dir.resolve("selection-$index.jsonl")
             sh(log, worktree.resolve("klause-bench").toFile(),
                 "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
                     "select ${Experiments.selectArgs(problemSelection)} > ${quote(selection.toString())}")
             selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
-        }.distinctBy { it.suite to it.problem }
+        }).distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems" }
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
         val parallel = spec.parallel ?: config.maxParallel

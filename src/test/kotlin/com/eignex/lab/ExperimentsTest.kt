@@ -89,4 +89,9 @@ class ExperimentsTest {
 
         assertEquals(listOf(7L to 0, 7L to 1, 7L to 2), cases.map { it.seed to it.repeat })
     }
+
+    @Test
+    fun `selections interleave so every one is reached early`() {
+        assertEquals(listOf("a1", "b1", "c1", "a2", "c2", "a3"), interleave(listOf(listOf("a1", "a2", "a3"), listOf("b1"), listOf("c1", "c2"))))
+    }
 }

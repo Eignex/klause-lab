@@ -47,9 +47,6 @@ data class ScheduleSpec(
 data class Created(val id: Long)
 
 @Serializable
-data class ReferenceImport(val sha: String, val read: Int, val changed: Int)
-
-@Serializable
 data class ReferenceHit(val collection: String, val problem: String, val reference: Reference)
 
 @Serializable
@@ -105,27 +102,26 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             }
         }
         get("/references") {
-            val search = call.parameters["q"]?.takeIf { it.isNotBlank() }
-            val found = search?.let { store.searchReferences(it, SEARCH_LIMIT) }.orEmpty()
+            fun param(name: String) = call.parameters[name]?.takeIf { it.isNotBlank() }
+            val filter = ReferenceFilter(
+                text = param("q"),
+                solver = param("solver"),
+                collection = param("collection"),
+                verdict = param("verdict")?.let { v -> ReferenceVerdict.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } },
+            )
+            val (found, total) = if (filter.isEmpty) emptyList<Pair<Pair<String, String>, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
             if (call.wantsHtml()) {
-                val page = referencesPage(store.referenceCoverage(), store.lastReferenceImport(), search, found, config.repoUrl)
+                val page = referencesPage(store.referenceCoverage(), filter, found, total)
                 call.respondText(page, ContentType.Text.Html)
             } else {
-                call.respond(if (search != null) found.map { (key, r) -> ReferenceHit(key.first, key.second, r) } else emptyList())
+                call.respond(found.map { (key, r) -> ReferenceHit(key.first, key.second, r) })
             }
         }
-        // Reads the bench's reference tables at [ref] out of the runner's mirror, keeping any stronger result already here.
-        post("/references/import") {
-            val ref = call.parameters["ref"]?.takeIf { it.isNotBlank() } ?: DEFAULT_REF
-            val read = withContext(Dispatchers.IO) { References(config.mirror.toFile()).read(ref) }
-            if (read == null) {
-                call.respond(HttpStatusCode.NotFound, "no commit $ref in the mirror yet; it appears once the runner has fetched")
-            } else {
-                val (sha, rows) = read
-                val changed = withContext(Dispatchers.IO) { store.putReferences(rows, "git:$sha") }
-                store.referenceImported(sha, changed)
-                call.respond(ReferenceImport(sha, rows.size, changed))
-            }
+        get("/problem") {
+            val collection = requireNotNull(call.parameters["collection"]) { "collection is required" }
+            val problem = requireNotNull(call.parameters["problem"]) { "problem is required" }
+            val report = ProblemReport(collection, problem, store.referenceRows(collection, problem), store.problemRuns(collection, problem))
+            if (call.wantsHtml()) call.respondText(problemPage(report, config.repoUrl), ContentType.Text.Html) else call.respond(report)
         }
         get("/experiments/{id}/reference") {
             val id = call.parameters["id"]!!.toLong()

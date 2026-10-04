@@ -1,7 +1,6 @@
 package com.eignex.lab
 
 import kotlinx.serialization.json.Json
-import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -9,14 +8,6 @@ import kotlin.test.assertEquals
 class ReferencesTest {
     private fun ref(feasible: Boolean?, objective: Double? = null, proven: Boolean = false) =
         Reference("cp-sat", maximize = false, objective = objective, feasible = feasible, proven = proven, elapsedMs = 10, budgetMs = 1000)
-
-    @Test
-    fun `a row with a quoted problem name parses whole`() {
-        val row = References.parse("z3", "smtlib-qf_lia,\"a,b/c\",false,7.0,true,true,12,10000,smtlib,arithmetic,0,1,false,QF_LIA")
-
-        assertEquals("smtlib-qf_lia" to "a,b/c", row?.first)
-        assertEquals(Reference("z3", false, 7.0, true, true, 12, 10000), row?.second)
-    }
 
     @Test
     fun `a re-import keeps the stronger result already stored`() {
@@ -39,20 +30,34 @@ class ReferencesTest {
         assertEquals(listOf("a proves infeasible, cp-sat solved it"), comparison.disagreements.map { it.reason })
     }
 
+
     @Test
-    fun `the tables are read from a commit of the mirror`() {
-        val repo = Files.createTempDirectory("klause").toFile()
-        fun git(vararg args: String) = ProcessBuilder(listOf("git", "-C", repo.path) + args).redirectErrorStream(true).start().waitFor()
-        git("init", "-q", "-b", "main")
-        File(repo, "klause-bench/reference").mkdirs()
-        File(repo, "klause-bench/reference/clasp.csv").writeText(
-            "suite,problem,maximize,objective,feasible,proven,elapsedMs,budgetMs\npb,x,false,3.0,true,true,5,30000\n",
+    fun `a filter keeps the rows of its solver and verdict, and counts them all`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        store.putReferences(
+            listOf(
+                ("c" to "a") to ref(true, 1.0, proven = true),
+                ("c" to "b") to ref(false, proven = true),
+                ("c" to "c") to ref(null),
+                ("d" to "a") to ref(true, 2.0, proven = true).copy(solver = "z3"),
+            ),
+            "test",
         )
-        git("add", ".")
-        git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "tables")
 
-        val (_, rows) = References(repo).read("main")!!
+        val (rows, total) = store.searchReferences(ReferenceFilter(solver = "cp-sat", verdict = ReferenceVerdict.OPTIMUM), limit = 10)
 
-        assertEquals(listOf(("pb" to "x") to "clasp"), rows.map { it.first to it.second.solver })
+        assertEquals(listOf("c" to "a") to 1, rows.map { it.first } to total)
+    }
+
+    @Test
+    fun `a problem's runs come from every experiment that ran it`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val problems = listOf(Problem("s", "p", collection = "c"), Problem("s", "q", collection = "c"))
+        val id = store.create("e", "main", emptyList(), experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s"))))
+        store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(2, 1, emptyList()), listOf("true" to 1L, "true" to 1L))
+
+        val runs = store.problemRuns("c", "q")
+
+        assertEquals(listOf(id to 1), runs.map { it.job to it.case })
     }
 }

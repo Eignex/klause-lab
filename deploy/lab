@@ -3,8 +3,8 @@
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
-#   lab references import [ref]                             load the bench's reference tables at ref (main) into the lab
-#   lab references <text>                                   find reference results by problem or collection
+#   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
+#                                                            satisfied infeasible unknown
 #   lab compare <id> <id>...                                the address of a page comparing experiments side by side
 #   lab parallel <id> <n>                                    let a job run n commands at once, also while it runs
 #   lab priority <id> <n>                                    reorder a queued job; a running one yields to a higher one
@@ -32,10 +32,10 @@ csv)
   if [[ -z "${2:-}" ]]; then curl -fsS "$url/experiments/$1/cases.csv"
   else curl -fsS -G "$url/experiments/$1/bench.csv" --data-urlencode "arm=$2" ${3:+--data-urlencode "seed=$3"}; fi ;;
 references)
-  if [[ "${1:-}" == import ]]; then curl -sS --fail-with-body -X POST "$url/references/import?ref=${2:-main}"; echo
-  else curl -fsS -G "$url/references" --data-urlencode "q=$1" -H 'Accept: application/json' | jq -r '.[] |
+  curl -fsS -G "$url/references" --data-urlencode "q=$1" --data-urlencode "solver=${2:-}" \
+    --data-urlencode "verdict=${3:-}" -H 'Accept: application/json' | jq -r '.[] |
     [.collection, .problem, .reference.solver, (.reference.feasible|tostring), (.reference.objective|tostring),
-     (.reference.proven|tostring), "\(.reference.elapsedMs)ms/\(.reference.budgetMs)ms"] | @tsv'; fi ;;
+     (.reference.proven|tostring), "\(.reference.elapsedMs)ms/\(.reference.budgetMs)ms"] | @tsv' ;;
 ls) curl -fsS "$url/jobs?limit=${1:-30}" | jq -r '.[] | [.id, .status,
       "\(.commands | map(select(.status=="DONE" or .status=="FAILED")) | length)/\(.commands | length)",
       "\(.commands | map(select(.status=="FAILED")) | length) failed", "x\(.parallel // 1)",

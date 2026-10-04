@@ -214,4 +214,16 @@ class StoreTest {
 
         assertEquals(null, store.schedules().single().checkedAt)
     }
+
+    @Test
+    fun `a job's clock stops while it waits in the queue`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L))
+        store.next()
+        store.requeue(id)
+
+        val waiting = checkNotNull(store.job(id))
+
+        assertEquals(null to waiting.runMs, waiting.runningSince to waiting.elapsedMs(now() + 3_600_000))
+    }
 }

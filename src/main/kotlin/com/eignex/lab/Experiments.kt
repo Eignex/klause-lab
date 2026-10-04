@@ -175,5 +175,9 @@ object SelectionsSerializer : JsonTransformingSerializer<List<Map<String, String
         element as? JsonArray ?: JsonArray(listOf(element))
 }
 
+/** Round-robin merge: the first of each list, then the second of each, and so on. */
+fun <T> interleave(lists: List<List<T>>): List<T> =
+    (0 until (lists.maxOfOrNull { it.size } ?: 0)).flatMap { k -> lists.mapNotNull { it.getOrNull(k) } }
+
 const val DEFAULT_REF = "main"
 private const val DEFAULT_TIMEOUT_MS = 10_000L

@@ -70,7 +70,7 @@ internal fun jobPage(
     append("<dt>created</dt><dd>${ago(job.createdAt)}</dd>")
     if (job.startedAt != null) append("<dt>started</dt><dd>${ago(job.startedAt)}</dd>")
     if (job.finishedAt != null) append("<dt>finished</dt><dd>${ago(job.finishedAt)}</dd>")
-    append("<dt>elapsed</dt><dd>${duration(job.startedAt, job.finishedAt)}</dd>")
+    append("<dt>elapsed</dt><dd>${elapsed(job)}</dd>")
     append("<dt>parallel</dt><dd>${job.parallel}</dd><dt>priority</dt><dd>${job.priority}</dd>")
     append("<dt>files</dt><dd><a href=\"/jobs/${job.id}/files\">all files</a>")
     for (log in listOf("setup.log", "job.log")) {
@@ -281,7 +281,9 @@ private fun problemGrid(
             }
         }
         val best = points.values.maxOrNull()?.takeIf { top -> points.values.any { it < top } }
-        append("<tr data-differ=\"${verdicts.distinct().size > 1}\"><td><code>${esc(name(problem))}</code></td>")
+        val label = "<code>${esc(name(problem))}</code>"
+        val cell = if (problem.collection.isEmpty()) label else "<a class=\"plain\" href=\"${problemLink(problem.collection, problem.problem)}\">$label</a>"
+        append("<tr data-differ=\"${verdicts.distinct().size > 1}\"><td>$cell</td>")
         for (label in labels) {
             val cls = if (best != null && points[label] == best) " class=\"best\"" else ""
             append("<td$cls>")
@@ -575,43 +577,65 @@ private const val TREND_SCRIPT = """<script>
 })();
 </script>"""
 
-/** The reference tab: what the lab's reference results cover, a search over them, and the import. */
+/** The reference tab: what the lab's reference results cover, and a filtered search over them. */
 internal fun referencesPage(
     coverage: List<ReferenceCoverage>,
-    lastImport: Triple<String, Long, Int>?,
-    search: String?,
+    filter: ReferenceFilter,
     found: List<Pair<Pair<String, String>, Reference>>,
-    repoUrl: String,
+    total: Int,
 ): String = buildString {
+    val visible = coverage.filter { c -> HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) } }
     append(head("reference · klause lab", live = false, tab = Tab.REFERENCE))
-    append("<header><h1>Reference</h1><p class=\"muted\">${coverage.sumOf { it.rows }} results from ")
-    append("${coverage.map { it.solver }.distinct().size} solvers over ${coverage.map { it.collection }.distinct().size} collections")
-    if (lastImport != null) {
-        val (sha, at, rows) = lastImport
-        val commit = commitUrl(repoUrl, sha)?.let { "<a href=\"$it\">${sha.take(9)}</a>" } ?: sha.take(9)
-        append(" · last import from <code>$commit</code> ${ago(at)}, $rows rows changed")
-    }
+    append("<header><h1>Reference</h1><p class=\"muted\">${visible.sumOf { it.rows }} results from ")
+    append("${visible.map { it.solver }.distinct().size} solvers over ${visible.map { it.collection }.distinct().size} collections")
     append("</p></header>")
-    append("<div class=\"actions\"><button onclick=\"act('/references/import?ref=main', null, ")
-    append("'Import the reference tables from klause main? Stronger results already here are kept.')\">import from main</button>")
-    append("<form method=\"get\" action=\"/references\" class=\"tools\" style=\"margin:0\"><input name=\"q\" type=\"search\" ")
-    append("placeholder=\"find a problem or collection\" value=\"${esc(search.orEmpty())}\"><button>find</button></form></div>")
-    if (search != null) {
-        append("<h2>Results for ${esc(search)} <small>${found.size}${if (found.size == SEARCH_LIMIT) "+" else ""}</small></h2>")
+    append("<form method=\"get\" action=\"/references\" class=\"tools filters\">")
+    append("<input name=\"q\" type=\"search\" placeholder=\"problem or collection contains\" value=\"${esc(filter.text.orEmpty())}\">")
+    append(select("solver", "every solver", coverage.map { it.solver }.distinct().sorted().map { it to it }, filter.solver))
+    append(select("collection", "every collection", visible.map { it.collection }.distinct().sorted().map { it to it }, filter.collection))
+    append(select("verdict", "any verdict", ReferenceVerdict.entries.map { it.name.lowercase() to it.label }, filter.verdict?.name?.lowercase()))
+    append("<button>filter</button>")
+    if (!filter.isEmpty) append("<a class=\"chip\" href=\"/references\">clear</a>")
+    append("</form>")
+    if (!filter.isEmpty) {
+        append("<h2>Results <small>${if (total > found.size) "${found.size} of $total" else "$total"}</small></h2>")
         append("<div class=\"scroll\"><table><tr><th>collection</th><th>problem</th><th>verdict</th><th class=\"num\">time</th>")
         append("<th class=\"num\">budget</th></tr>")
         for ((key, r) in found) {
-            append("<tr><td>${esc(key.first)}</td><td><code>${esc(key.second)}</code></td><td>${referenceVerdict(r)}</td>")
+            append("<tr><td>${esc(key.first)}</td><td><a class=\"plain\" href=\"${problemLink(key.first, key.second)}\"><code>${esc(key.second)}</code></a></td>")
+            append("<td>${referenceVerdict(r)}</td>")
             append("<td class=\"num\">${"%.2f".format(r.elapsedMs / 1000.0)}s</td><td class=\"num\">${r.budgetMs / 1000}s</td></tr>")
         }
         append("</table></div>")
     }
-    append("<h2>Coverage</h2>")
-    if (coverage.isEmpty()) append("<p class=\"muted\">No reference results yet: import them from klause main.</p>")
+    val shown = visible.filter { c ->
+        (filter.solver == null || c.solver == filter.solver) && (filter.collection == null || c.collection == filter.collection)
+    }
+    append("<h2>Coverage${if (shown.size < visible.size) " <small>${shown.size} of ${visible.size} rows</small>" else ""}</h2>")
+    if (coverage.isEmpty()) append("<p class=\"muted\">No reference results yet.</p>")
     append("<div class=\"scroll\"><table><tr><th>collection</th><th>solver</th><th class=\"num\">problems</th>")
     append("<th class=\"num\">decided</th><th class=\"num\">proven</th><th class=\"num\">infeasible</th><th>updated</th></tr>")
-    for (c in coverage) {
-        append("<tr><td>${esc(c.collection)}</td><td>${esc(c.solver)}</td><td class=\"num\">${c.rows}</td>")
+    // A family of many small collections reads as one row until it is opened.
+    val groups = shown.groupBy { c -> COLLAPSED_FAMILIES.firstOrNull { c.collection.startsWith("$it-") } }
+    for (c in shown) {
+        val family = COLLAPSED_FAMILIES.firstOrNull { c.collection.startsWith("$it-") }
+        val members = groups[family].orEmpty()
+        if (family != null && members.size > 1) {
+            if (c != members.first()) {
+                append("<tr data-in=\"$family\" hidden>")
+            } else {
+                append("<tr class=\"family\" onclick=\"document.querySelectorAll('tr[data-in=$family]').forEach(function (r) { r.hidden = !r.hidden; })\">")
+                append("<td>▸ <b>$family</b> <small class=\"muted\">${members.size} collections</small></td>")
+                append("<td>${esc(members.map { it.solver }.distinct().joinToString())}</td><td class=\"num\">${members.sumOf { it.rows }}</td>")
+                append("<td class=\"num\">${members.sumOf { it.decided }}</td><td class=\"num\">${members.sumOf { it.proven }}</td>")
+                append("<td class=\"num\">${members.sumOf { it.infeasible }}</td><td>${ago(members.maxOf { it.updatedAt })}</td></tr>")
+                append("<tr data-in=\"$family\" hidden>")
+            }
+        } else {
+            append("<tr>")
+        }
+        val link = "/references${query("collection" to c.collection, "solver" to c.solver)}"
+        append("<td><a class=\"plain\" href=\"$link\">${esc(c.collection)}</a></td><td>${esc(c.solver)}</td><td class=\"num\">${c.rows}</td>")
         append("<td class=\"num\">${c.decided}</td><td class=\"num\">${c.proven}</td><td class=\"num\">${c.infeasible}</td>")
         append("<td>${ago(c.updatedAt)}</td></tr>")
     }
@@ -621,6 +645,70 @@ internal fun referencesPage(
 }
 
 internal const val SEARCH_LIMIT = 200
+
+/** Test fixtures, not benchmarks: kept in the store, left out of the coverage view. */
+private val HIDDEN_COLLECTIONS = listOf("klause-bench/smoke-corpus/")
+
+/** Families of many small collections that coverage folds into one expandable row. */
+private val COLLAPSED_FAMILIES = listOf("satlib")
+
+private fun problemLink(collection: String, problem: String) = "/problem${query("collection" to collection, "problem" to problem)}"
+
+/** One problem: every reference solver's verdict on it, and every time the lab ran it. */
+internal fun problemPage(report: ProblemReport, repoUrl: String): String = buildString {
+    append(head("${report.problem} · klause lab", live = report.runs.any { it.status in ACTIVE }, tab = Tab.REFERENCE))
+    append("<header><h1><code>${esc(report.problem)}</code></h1><p class=\"muted\">")
+    append("<a href=\"/references${query("collection" to report.collection)}\">${esc(report.collection)}</a></p></header>")
+    append("<h2>Reference <small>${report.references.size} solvers, strongest first</small></h2>")
+    if (report.references.isEmpty()) {
+        append("<p class=\"muted\">No reference result for this problem.</p>")
+    } else {
+        append("<div class=\"scroll\"><table><tr><th>solver</th><th>verdict</th><th class=\"num\">objective</th>")
+        append("<th class=\"num\">time</th><th class=\"num\">budget</th></tr>")
+        for (r in report.references) {
+            append("<tr><td>${esc(r.solver)}</td><td>${verdictWord(r)}</td><td class=\"num\">${r.objective?.let(::number) ?: "–"}</td>")
+            append("<td class=\"num\">${"%.2f".format(r.elapsedMs / 1000.0)}s</td><td class=\"num\">${r.budgetMs / 1000}s</td></tr>")
+        }
+        append("</table></div>")
+    }
+    append("<h2>Lab runs <small>${report.runs.size} cases</small></h2>")
+    if (report.runs.isEmpty()) {
+        append("<p class=\"muted\">No experiment has run this problem.</p>")
+    } else {
+        append("<div class=\"scroll\"><table><tr><th>experiment</th><th>arm</th><th>commit</th><th>seed</th><th>verdict</th>")
+        append("<th class=\"num\">time</th><th>output</th><th>when</th></tr>")
+        for (run in report.runs) {
+            val outcome = Outcome.of(run.record)
+            val commit = commitUrl(repoUrl, run.sha)?.let { "<a href=\"$it\">${run.sha.take(9)}</a>" } ?: run.sha.take(9)
+            val time = outcome?.takeIf { it.rank > 0 }?.let { "%.2fs".format(it.timeMs / 1000.0) } ?: "–"
+            append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a> ${esc(run.jobName)}</td><td>${esc(run.arm)}</td>")
+            append("<td><code>$commit</code></td><td>${run.seed ?: "–"}${if (run.repeat > 0) " #${run.repeat}" else ""}</td>")
+            append("<td>${verdict(outcome, run.status)}</td><td class=\"num\">$time</td>")
+            append("<td><a href=\"/jobs/${run.job}/files/${run.case}.out\">out</a> <a href=\"/jobs/${run.job}/files/${run.case}.err\">err</a></td>")
+            append("<td>${ago(run.createdAt)}</td></tr>")
+        }
+        append("</table></div>")
+    }
+    append(SCRIPT)
+    append("</body></html>")
+}
+
+/** A reference verdict in a word, without the solver beside it. */
+private fun verdictWord(r: Reference): String = when {
+    r.feasible == false -> "infeasible" + if (r.proven) " (proven)" else ""
+    r.feasible == null -> "<span class=\"muted\">unknown</span>"
+    r.objective != null -> if (r.proven) "optimum" else "solution"
+    else -> "sat"
+}
+
+/** A filter dropdown that submits its form on change; [options] are (value, label). */
+private fun select(name: String, any: String, options: List<Pair<String, String>>, chosen: String?): String = buildString {
+    append("<select name=\"$name\" onchange=\"this.form.submit()\"><option value=\"\">${esc(any)}</option>")
+    for ((value, label) in options) {
+        append("<option value=\"${esc(value)}\"${if (value == chosen) " selected" else ""}>${esc(label)}</option>")
+    }
+    append("</select>")
+}
 
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
     append(head("$jobId files · klause lab", live = false))
@@ -687,7 +775,7 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
         val base = job.name.substringBefore('@')
         append("<td><a class=\"plain\" href=\"/${query("name" to base)}\" title=\"all runs of ${esc(base)}\">${esc(job.name)}</a></td>")
         append("<td>${refText(config, job)}</td><td>${statusCell(job, positions[job.id])}</td><td>${progress(job)}</td>")
-        append("<td>${ago(job.createdAt)}</td><td>${duration(job.startedAt, job.finishedAt)}</td>")
+        append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
         val running = job.commands.filter { it.status == Status.RUNNING }
         if (running.isNotEmpty() && !filterable) {
@@ -782,6 +870,11 @@ private fun ago(millis: Long?): String {
     return "<span title=\"${stamp.format(Instant.ofEpochMilli(millis))}\">$text</span>"
 }
 
+/** A job's running time as h:mm:ss, its waits in the queue left out. */
+private fun elapsed(job: Job): String = if (job.startedAt == null) "" else clock(job.elapsedMs(now()) / 1000)
+
+private fun clock(seconds: Long) = "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+
 private fun span(seconds: Long): String = when {
     seconds < 60 -> "${seconds}s"
     seconds < 3600 -> "${seconds / 60}m"
@@ -791,8 +884,7 @@ private fun span(seconds: Long): String = when {
 
 private fun duration(from: Long?, to: Long?): String {
     if (from == null) return ""
-    val seconds = ((to ?: now()) - from) / 1000
-    return "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    return clock(((to ?: now()) - from) / 1000)
 }
 
 private fun size(bytes: Long): String = when {
@@ -835,7 +927,7 @@ private const val STYLE = """
 body{font:14px system-ui,sans-serif;margin:0 auto;max-width:1440px;padding:24px 32px 48px;background:var(--bg);color:var(--fg)}
 @media (max-width:700px){body{padding:16px}}
 a{color:var(--link)}a.plain{color:inherit;text-decoration:none}a.plain:hover{text-decoration:underline}
-h1{margin:0 0 4px}h1 a{color:inherit;text-decoration:none}h2{font-size:16px;margin:32px 0 10px}h2 small{font-weight:normal}
+h1{margin:0 0 4px}h1 code{font-size:inherit}h1 a{color:inherit;text-decoration:none}h2{font-size:16px;margin:32px 0 10px}h2 small{font-weight:normal}
 .muted{color:var(--muted)}.scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%}td,th{padding:6px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th.num,td.num{text-align:right}tr.sub td{border-top:0;padding-top:0;font-size:12px}tr.sub div{margin:2px 0}
@@ -860,6 +952,8 @@ nav.tabs a{padding:8px 14px;color:var(--muted);text-decoration:none;border-botto
 nav.tabs a:hover{color:var(--fg)}nav.tabs a.on{color:var(--fg);border-bottom-color:var(--link);font-weight:600}
 nav.tabs a.brand{color:var(--fg);font-weight:700;padding-left:0;margin-right:12px}
 a.chip{text-decoration:none;display:inline-block}
+tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
+.filters{align-items:center}.filters select{font:inherit;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
 .chart svg,.multiple svg{display:block}.chart{width:100%}
 .grid{stroke:var(--line);stroke-width:1}.tick{fill:var(--muted);font-size:11px}.tick.mono{font-family:ui-monospace,monospace}
 .endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}

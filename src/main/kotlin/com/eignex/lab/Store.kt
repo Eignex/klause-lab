@@ -51,7 +51,14 @@ data class Job(
     /** Set for an experiment, whose commands the runner writes from it when it plans the job. */
     val experiment: ExperimentSpec? = null,
     val commands: List<Command> = emptyList(),
+    /** Time spent running in earlier stretches: a job that yields or is paused stops its clock until taken again. */
+    val runMs: Long = 0,
+    /** When the current running stretch began; null while the job waits. */
+    val runningSince: Long? = null,
 ) {
+    /** Time the job has spent running, so far or in all; waiting in the queue, paused or yielded, does not count. */
+    fun elapsedMs(now: Long): Long = runMs + (runningSince?.let { now - it } ?: 0)
+
     val done: Int get() = commands.count { it.status == Status.DONE || it.status == Status.FAILED }
     val failed: Int get() = commands.count { it.status == Status.FAILED }
 }
@@ -114,7 +121,8 @@ class Store(file: Path) {
                     status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0,
                     setup_done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, started_at INTEGER,
                     finished_at INTEGER, error TEXT, parallel INTEGER NOT NULL DEFAULT 1,
-                    priority INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, experiment TEXT)""",
+                    priority INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0, experiment TEXT,
+                    run_ms INTEGER NOT NULL DEFAULT 0, running_since INTEGER)""",
             )
             it.execute(
                 """CREATE TABLE IF NOT EXISTS commands (
@@ -150,7 +158,6 @@ class Store(file: Path) {
                     budget_ms INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
                     PRIMARY KEY (collection, problem, solver))""",
             )
-            it.execute("CREATE TABLE IF NOT EXISTS reference_imports (sha TEXT NOT NULL, at INTEGER NOT NULL, rows INTEGER NOT NULL)")
         }
     }
 
@@ -358,10 +365,14 @@ class Store(file: Path) {
             it.setString(1, Status.QUEUED.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }?.also { claimed ->
-            connection.prepareStatement("UPDATE jobs SET status = ?, started_at = ? WHERE id = ?").use {
+            connection.prepareStatement(
+                "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ? WHERE id = ?",
+            ).use {
+                val at = now()
                 it.setString(1, Status.RUNNING.name)
-                it.setLong(2, now())
-                it.setLong(3, claimed)
+                it.setLong(2, at)
+                it.setLong(3, at)
+                it.setLong(4, claimed)
                 it.executeUpdate()
             }
         }
@@ -391,10 +402,14 @@ class Store(file: Path) {
     )
 
     @Synchronized
-    fun finish(jobId: Long, status: Status, error: String? = null) = update(
-        "UPDATE jobs SET status = ?, finished_at = ?, error = ? WHERE id = ?",
-        status.name, now(), error, jobId,
-    )
+    fun finish(jobId: Long, status: Status, error: String? = null): Int {
+        val at = now()
+        return update(
+            "UPDATE jobs SET status = ?, finished_at = ?, error = ?, run_ms = run_ms + COALESCE(? - running_since, 0), " +
+                "running_since = NULL WHERE id = ?",
+            status.name, at, error, at, jobId,
+        )
+    }
 
     @Synchronized
     fun requestCancel(jobId: Long): CancelOutcome = transaction {
@@ -461,7 +476,7 @@ class Store(file: Path) {
 
     /**
      * Keep each of [rows] for its (collection, problem, solver) unless the stored row is stronger (see
-     * [References.stronger]), so a re-import or a weaker rerun never loses a proof. Returns how many rows changed.
+     * [References.stronger]), so a weaker rerun never loses a proof. Returns how many rows changed.
      */
     @Synchronized
     fun putReferences(rows: List<Pair<Pair<String, String>, Reference>>, source: String): Int = transaction {
@@ -499,14 +514,40 @@ class Store(file: Path) {
         changed
     }
 
+    /** Every reference solver's row on one problem, strongest first. */
     @Synchronized
-    fun referenceImported(sha: String, rows: Int) = update("INSERT INTO reference_imports (sha, at, rows) VALUES (?, ?, ?)", sha, now(), rows)
+    fun referenceRows(collection: String, problem: String): List<Reference> =
+        connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ?").use { statement ->
+            statement.setString(1, collection)
+            statement.setString(2, problem)
+            statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
+        }.sortedWith { a, b -> if (References.stronger(a, b)) -1 else if (References.stronger(b, a)) 1 else 0 }
 
-    /** The last import: commit, time and rows changed. */
+    /** Every case of any experiment that ran one problem, newest experiment first. */
     @Synchronized
-    fun lastReferenceImport(): Triple<String, Long, Int>? = connection.prepareStatement(
-        "SELECT sha, at, rows FROM reference_imports ORDER BY at DESC LIMIT 1",
-    ).use { it.executeQuery().use { r -> if (r.next()) Triple(r.getString(1), r.getLong(2), r.getInt(3)) else null } }
+    fun problemRuns(collection: String, problem: String): List<ProblemRun> = connection.prepareStatement(
+        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, c.record
+           FROM problems p
+           JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
+           JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
+           JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
+           JOIN jobs j ON j.id = c.job_id
+           WHERE json_extract(p.problem, '$.collection') = ? AND json_extract(p.problem, '$.problem') = ?
+           ORDER BY j.id DESC, a.idx, c.seed, c.repeat""",
+    ).use { statement ->
+        statement.setString(1, collection)
+        statement.setString(2, problem)
+        statement.executeQuery().use { r ->
+            generateSequence {
+                if (!r.next()) return@generateSequence null
+                ProblemRun(
+                    job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
+                    sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
+                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let { Json.parseToJsonElement(it) },
+                )
+            }.toList()
+        }
+    }
 
     /** The strongest reference row of each of [keys] that has any, keyed by (collection, problem). */
     @Synchronized
@@ -533,18 +574,34 @@ class Store(file: Path) {
         }
     }
 
-    /** Up to [limit] reference rows whose problem contains [text], with their keys. */
+    /** Up to [limit] reference rows that pass [filter], with their keys, and how many pass in all. */
     @Synchronized
-    fun searchReferences(text: String, limit: Int): List<Pair<Pair<String, String>, Reference>> = connection.prepareStatement(
-        "SELECT * FROM reference_rows WHERE problem LIKE ? ESCAPE '\\' OR collection LIKE ? ESCAPE '\\' ORDER BY collection, problem LIMIT ?",
-    ).use { statement ->
-        val like = "%" + likeEscape(text) + "%"
-        statement.setString(1, like)
-        statement.setString(2, like)
-        statement.setInt(3, limit)
-        statement.executeQuery().use { r ->
-            generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
+    fun searchReferences(filter: ReferenceFilter, limit: Int): Pair<List<Pair<Pair<String, String>, Reference>>, Int> {
+        val conditions = ArrayList<String>()
+        val values = ArrayList<Any>()
+        filter.text?.let {
+            conditions += "(problem LIKE ? ESCAPE '\\' OR collection LIKE ? ESCAPE '\\')"
+            val like = "%" + likeEscape(it) + "%"
+            values += like
+            values += like
         }
+        filter.solver?.let { conditions += "solver = ?"; values += it }
+        filter.collection?.let { conditions += "collection = ?"; values += it }
+        filter.verdict?.let { conditions += "(${it.sql})" }
+        val where = if (conditions.isEmpty()) "" else "WHERE " + conditions.joinToString(" AND ")
+        fun bind(statement: java.sql.PreparedStatement) = values.forEachIndexed { i, v -> statement.setObject(i + 1, v) }
+        val total = connection.prepareStatement("SELECT COUNT(*) FROM reference_rows $where").use { statement ->
+            bind(statement)
+            statement.executeQuery().use { r -> r.next(); r.getInt(1) }
+        }
+        val rows = connection.prepareStatement("SELECT * FROM reference_rows $where ORDER BY collection, problem, solver LIMIT ?").use { statement ->
+            bind(statement)
+            statement.setInt(values.size + 1, limit)
+            statement.executeQuery().use { r ->
+                generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
+            }
+        }
+        return rows to total
     }
 
     private fun reference(r: ResultSet) = Reference(
@@ -593,9 +650,14 @@ class Store(file: Path) {
 
     /** Put a running job that yielded back in the queue; its finished commands and its worktree stay. */
     @Synchronized
-    fun requeue(jobId: Long) = update(
-        "UPDATE jobs SET status = ? WHERE id = ? AND status = ?", Status.QUEUED.name, jobId, Status.RUNNING.name,
-    )
+    fun requeue(jobId: Long): Int {
+        val at = now()
+        return update(
+            "UPDATE jobs SET status = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL " +
+                "WHERE id = ? AND status = ?",
+            Status.QUEUED.name, at, jobId, Status.RUNNING.name,
+        )
+    }
 
     @Synchronized
     fun setParallel(jobId: Long, parallel: Int): Boolean =
@@ -646,6 +708,8 @@ class Store(file: Path) {
         rows.getLong("created_at"), rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
         rows.getString("error"), rows.getInt("parallel"), rows.getInt("priority"), rows.getInt("paused") == 1,
         rows.getString("experiment")?.let { Json.decodeFromString<ExperimentSpec>(it) },
+        runMs = rows.getLong("run_ms"),
+        runningSince = rows.longOrNull("running_since"),
     )
 
     private fun update(sql: String, vararg values: Any?) = connection.prepareStatement(sql).use { statement ->
