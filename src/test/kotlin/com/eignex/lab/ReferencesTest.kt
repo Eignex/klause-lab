@@ -60,4 +60,15 @@ class ReferencesTest {
 
         assertEquals(listOf(id to 1), runs.map { it.job to it.case })
     }
+
+    @Test
+    fun `a reference arm's record becomes a row timed by its solve time, and an error none`() {
+        val proof = """{"solver":"clasp","kind":"satisfy","maximize":false,"feasible":true,"proven":true,"budgetMs":10000,
+            "command":"docker run","stats":{"solveTime":"0.25"}}"""
+        val error = """{"solver":"clasp","kind":"satisfy","budgetMs":10000,"command":"ERROR"}"""
+
+        val rows = listOf(proof, error).map { References.of(Json.parseToJsonElement(it)) }
+
+        assertEquals(listOf(Reference("clasp", false, null, true, true, 250, 10000), null), rows)
+    }
 }

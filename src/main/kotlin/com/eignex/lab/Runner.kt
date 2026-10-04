@@ -275,8 +275,20 @@ class Runner(private val config: Config, private val store: Store) {
     /** Keep the record a finished case wrote; a case that wrote none (it could not run) keeps none. */
     private fun keepRecord(jobId: Long, index: Int, dir: Path) {
         val record = dir.resolve(CASES).resolve(index.toString()).toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()
-        runCatching { record?.let { store.caseRecord(jobId, index, it.readText()) } }
-            .onFailure { log(jobId, "case $index: record not kept: ${it.message}") }
+        runCatching {
+            val text = record?.readText() ?: return@runCatching
+            store.caseRecord(jobId, index, text)
+            promote(jobId, index, text)
+        }.onFailure { log(jobId, "case $index: record not kept: ${it.message}") }
+    }
+
+    /** A case of a reference arm adds its verdict to the reference results as it finishes, so a run cut short still
+     *  contributes what it solved; a stored stronger verdict stays. */
+    private fun promote(jobId: Long, index: Int, record: String) {
+        val (problem, arm) = store.caseOf(jobId, index) ?: return
+        if (arm.values["backend"] != REFERENCE_BACKEND || problem.collection.isEmpty()) return
+        val reference = References.of(Json.parseToJsonElement(record)) ?: return
+        store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$jobId")
     }
 
     private fun fetchMirror(log: File) {

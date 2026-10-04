@@ -79,6 +79,12 @@ reference ran under its own budget, so this compares verdicts, not speed. Contra
 disagreements, which makes the reference a soundness check: an arm proving infeasible what the reference solved, or
 beating a proven reference optimum.
 
+An arm with `"backend": "reference"` runs each problem's reference solver instead of klause: clasp for DIMACS, OPB and
+WCNF, the cp-sat image for XCSP3, z3 for SMT-LIB, SCIP for MPS, cp-sat for MiniZinc. Each such case adds its verdict
+to the reference results as it finishes, keyed by collection and problem; a stronger result already there stays. So
+`{"problems": {"suite": "satlib"}, "base": {"backend": "reference", "timeout": "60000"}}` fills in clasp's verdicts
+on all of SATLIB.
+
 `lab references import [ref]` loads the bench's tables (`klause-bench/reference/*.csv` at `ref`, default `main`) from
 the runner's mirror; a row already stored is replaced only by a stronger one (decided over undecided, proven over
 unproven, then the better objective), so imports never lose a result. `lab references <text>` searches them. The

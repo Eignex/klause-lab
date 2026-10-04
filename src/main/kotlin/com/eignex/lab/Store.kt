@@ -298,6 +298,21 @@ class Store(file: Path) {
     }
 
     /** Keep the record a case's `solve-one` wrote. */
+    /** The problem and arm of case [index] of [jobId]. */
+    @Synchronized
+    fun caseOf(jobId: Long, index: Int): Pair<Problem, Arm>? = connection.prepareStatement(
+        """SELECT p.problem, a.arm FROM cases c
+           JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
+           JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
+           WHERE c.job_id = ? AND c.idx = ?""",
+    ).use { statement ->
+        statement.setLong(1, jobId)
+        statement.setInt(2, index)
+        statement.executeQuery().use { r ->
+            if (r.next()) Json.decodeFromString<Problem>(r.getString(1)) to Json.decodeFromString<Arm>(r.getString(2)) else null
+        }
+    }
+
     @Synchronized
     fun caseRecord(jobId: Long, index: Int, record: String) =
         update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, jobId, index)

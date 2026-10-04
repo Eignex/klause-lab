@@ -2,6 +2,12 @@ package com.eignex.lab
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 
 /** A reference solver's verdict on one problem, as `klause-bench/reference/<solver>.csv` records it. */
 @Serializable
@@ -87,8 +93,42 @@ data class ReferenceSummary(
 @Serializable
 data class ReferenceComparison(val summaries: List<ReferenceSummary>, val disagreements: List<Disagreement>)
 
+/** The `backend=` that runs each problem's reference solver, whose cases become reference results. */
+const val REFERENCE_BACKEND = "reference"
+
 /** How reference results merge and how an experiment measures up to them. */
 object References {
+    /**
+     * A reference arm's case record as a reference row, timed as `bench reference` times its rows: a proof by its solve
+     * time, an unproven solution by its time to the first one, anything else by the whole budget. Null for a record
+     * of a run that never solved: an error, or a problem that did not load.
+     */
+    fun of(record: JsonElement): Reference? {
+        val fields = record as? JsonObject ?: return null
+        fun field(name: String) = (fields[name] as? JsonPrimitive)?.takeUnless { it is JsonNull }
+        val command = field("command")?.content
+        if (command == "ERROR" || command == "LOAD") return null
+        val solver = field("solver")?.content ?: return null
+        val budgetMs = field("budgetMs")?.longOrNull ?: return null
+        val feasible = field("feasible")?.booleanOrNull
+        val proven = field("proven")?.booleanOrNull ?: false
+        val solveMs = ((fields["stats"] as? JsonObject)?.get("solveTime") as? JsonPrimitive)?.content?.toDoubleOrNull()?.let { (it * 1000).toLong() }
+        val elapsedMs = when {
+            proven -> solveMs ?: budgetMs
+            feasible == true -> field("timeToFirstFeasibleMs")?.longOrNull ?: solveMs ?: budgetMs
+            else -> budgetMs
+        }
+        return Reference(
+            solver = solver,
+            maximize = field("maximize")?.booleanOrNull ?: false,
+            objective = field("objective")?.doubleOrNull,
+            feasible = feasible,
+            proven = proven,
+            elapsedMs = elapsedMs,
+            budgetMs = budgetMs,
+        )
+    }
+
     /** Whether [a] is the better verdict on a problem than [b]: decided over undecided, proven over unproven,
      *  then the better objective. */
     internal fun stronger(a: Reference, b: Reference): Boolean {
