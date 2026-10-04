@@ -85,10 +85,10 @@ to the reference results as it finishes, keyed by collection and problem; a stro
 `{"problems": {"suite": "satlib"}, "base": {"backend": "reference", "timeout": "60000"}}` fills in clasp's verdicts
 on all of SATLIB.
 
-`lab references import [ref]` loads the bench's tables (`klause-bench/reference/*.csv` at `ref`, default `main`) from
-the runner's mirror; a row already stored is replaced only by a stronger one (decided over undecided, proven over
-unproven, then the better objective), so imports never lose a result. `lab references <text>` searches them. The
-Reference tab shows what they cover and runs the import.
+Results are kept per (collection, problem, solver); a new one replaces a stored one only when it is stronger (decided
+over undecided, proven over unproven, then the better objective), so no proof is lost. `lab references <text> [solver]
+[verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
+with every solver's verdict and every lab run of it.
 
 The lab has three tabs: Queue (experiments, their pages and comparisons), Regression (a schedule's trend) and
 Reference.
