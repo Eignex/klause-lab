@@ -217,13 +217,19 @@ enum class ReferenceFilterMode {
     PROVEN,
     /** Keep only the problems with no reference verdict at all: what a reference run backfills. */
     MISSING,
+    /**
+     * Keep the problems with no reference verdict, or an unproven one from a smaller budget than this run's: what a
+     * scheduled reference run reruns, so it upgrades short-budget verdicts once and leaves hopeless problems alone.
+     */
+    UNSETTLED,
     ANY;
 
-    /** Whether to keep a problem whose reference verdict is [reference], null when it has none. */
-    fun keeps(reference: Reference?): Boolean = when (this) {
+    /** Whether a run with [budgetMs] per case keeps a problem whose reference verdict is [reference], null when it has none. */
+    fun keeps(reference: Reference?, budgetMs: Long): Boolean = when (this) {
         DECIDED -> reference == null || reference.feasible != null
         PROVEN -> reference != null && reference.proven
         MISSING -> reference == null
+        UNSETTLED -> reference == null || !reference.proven && reference.budgetMs < budgetMs
         ANY -> true
     }
 }
@@ -233,4 +239,4 @@ fun <T> interleave(lists: List<List<T>>): List<T> =
     (0 until (lists.maxOfOrNull { it.size } ?: 0)).flatMap { k -> lists.mapNotNull { it.getOrNull(k) } }
 
 const val DEFAULT_REF = "main"
-private const val DEFAULT_TIMEOUT_MS = 10_000L
+private const val DEFAULT_TIMEOUT_MS = 60_000L

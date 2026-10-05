@@ -100,7 +100,7 @@ class ExperimentsTest {
         val decided = Reference("scip", false, 3.0, true, true, 100, 10_000)
         val undecided = decided.copy(objective = null, feasible = null, proven = false)
 
-        assertEquals(listOf(true, false, true), listOf(decided, undecided, null).map { ReferenceFilterMode.DECIDED.keeps(it) })
+        assertEquals(listOf(true, false, true), listOf(decided, undecided, null).map { ReferenceFilterMode.DECIDED.keeps(it, 60_000) })
     }
 
     @Test
@@ -128,6 +128,15 @@ class ExperimentsTest {
     fun `the missing filter keeps only problems without a reference verdict`() {
         val decided = Reference("scip", false, 3.0, true, true, 100, 10_000)
 
-        assertEquals(listOf(false, true), listOf(decided, null).map { ReferenceFilterMode.MISSING.keeps(it) })
+        assertEquals(listOf(false, true), listOf(decided, null).map { ReferenceFilterMode.MISSING.keeps(it, 60_000) })
+    }
+
+    @Test
+    fun `the unsettled filter reruns what a smaller budget left unproven`() {
+        val proven = Reference("scip", false, 3.0, true, true, 100, 10_000)
+        val short = proven.copy(proven = false)
+        val full = short.copy(budgetMs = 60_000)
+
+        assertEquals(listOf(false, true, false, true), listOf(proven, short, full, null).map { ReferenceFilterMode.UNSETTLED.keeps(it, 60_000) })
     }
 }

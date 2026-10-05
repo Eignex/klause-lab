@@ -243,6 +243,7 @@ class Runner(private val config: Config, private val store: Store) {
         val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
         // Each selection is capped on its own; a problem two selections share is solved once.
         // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
+        val budgetMs = arms.maxOf { it.timeoutMs }
         val problems = interleave(spec.problems.withIndex().map { (index, problemSelection) ->
             val selection = dir.resolve("selection-$index.jsonl")
             val mode = Experiments.referenceFilter(spec, problemSelection)
@@ -255,7 +256,7 @@ class Runner(private val config: Config, private val store: Store) {
                     "select ${Experiments.selectArgs(asked)} > ${quote(selection.toString())}")
             val selected = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
             val references = store.references(selected.map { it.collection to it.problem })
-            val kept = selected.filter { mode.keeps(references[it.collection to it.problem]) }
+            val kept = selected.filter { mode.keeps(references[it.collection to it.problem], budgetMs) }
             if (kept.size < selected.size) {
                 log(job.id, "selection $index: ${selected.size - kept.size} of ${selected.size} problems left out by reference=${mode.name.lowercase()}")
             }

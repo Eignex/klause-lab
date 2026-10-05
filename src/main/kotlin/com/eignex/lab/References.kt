@@ -130,12 +130,13 @@ object References {
     }
 
     /** Whether [a] is the better verdict on a problem than [b]: decided over undecided, proven over unproven,
-     *  then the better objective. */
+     *  then the better objective, then the bigger budget, which makes an equal verdict the more telling one. */
     internal fun stronger(a: Reference, b: Reference): Boolean {
         if ((a.feasible != null) != (b.feasible != null)) return a.feasible != null
         if (a.proven != b.proven) return a.proven
         val (x, y) = a.objective to b.objective
-        return x != null && (y == null || if (a.maximize) x > y else x < y)
+        if (x != y) return x != null && (y == null || if (a.maximize) x > y else x < y)
+        return a.budgetMs > b.budgetMs
     }
 
 

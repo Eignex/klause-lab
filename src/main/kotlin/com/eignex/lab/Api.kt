@@ -92,7 +92,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
-            val schedules = store.schedules().map { it.name }
+            // A schedule of reference runs regenerates the reference; its trend says nothing about klause.
+            val schedules = store.schedules()
+                .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
+                .map { it.name }
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()
             val runs = name?.let { Trend.runs(store, it) }.orEmpty()
             if (call.wantsHtml()) {

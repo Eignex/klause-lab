@@ -31,12 +31,13 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - A selection's `reference` decides which problems it keeps by their verdict in the lab's reference results:
   `decided` (the default) leaves out those the reference ran and left undecided within its budget, since a problem no
   strong solver settles in seconds says little about klause; `proven` keeps only those it proved; `missing` keeps only those with no reference verdict, which a reference run
-  uses to backfill; `any` keeps all. A
+  uses to backfill; `unsettled` keeps those plus the ones left unproven under a smaller budget than the run's, which a
+  scheduled reference run uses; `any` keeps all. A
   problem with no reference verdict is kept by `decided`. Caps (`per-family`, `max`) count the problems the filter
   keeps, so a capped selection is filled from the decided ones. An experiment with a `backend=reference` arm defaults
   to `any`. Planning logs how many problems the filter left out.
 - Each entry of `configs` (default: one empty config) is merged over `base`, then crossed with every combination of
-  `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 10000), `backend`, `engine`,
+  `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 60000), `backend`, `engine`,
   `processors`, `lp`, `presolve`, `fixed`, and `param.<name>` for `--param <name>=<value>`. An arm without a `label` is
   named by the values that set it apart.
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
@@ -93,7 +94,7 @@ to the reference results as it finishes, keyed by collection and problem; a stro
 on all of SATLIB.
 
 Results are kept per (collection, problem, solver); a new one replaces a stored one only when it is stronger (decided
-over undecided, proven over unproven, then the better objective), so no proof is lost. `lab references <text> [solver]
+over undecided, proven over unproven, then the better objective, then the bigger budget), so no proof is lost. `lab references <text> [solver]
 [verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
 with every solver's verdict and every lab run of it.
 
@@ -112,6 +113,10 @@ nothing. A check asks origin for a branch or tag's commit with `git ls-remote`, 
 it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab check <id>` makes a schedule due at once,
 and the runner checks it within 10 s, which is also what a push hook would call. `lab schedules` lists them with the
 last commit and job; `lab unschedule <id>` removes one.
+
+A schedule of `backend=reference` runs keeps the reference current: with `"reference": "unsettled"` on its selections,
+each run solves only the problems new since the last one, plus those a smaller budget left unproven, so a long interval
+and a low priority keep it out of the sweep's way. Such schedules have no Regression trend.
 
 ## Crash safety
 
@@ -252,7 +257,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
 | `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
-| `GET` | `/trend[?name=<schedule>]` | a schedule's runs over its commits; the first schedule without a name |
+| `GET` | `/trend[?name=<schedule>]` | a schedule's runs over its commits; the first klause schedule without a name |
 | `GET` | `/references[?q=&solver=&collection=&verdict=]` | reference coverage, or the results the filters keep |
 | `GET` | `/problem?collection=<c>&problem=<p>` | one problem: every reference solver's verdict and every lab run |
 | `GET` | `/experiments/{id}/reference` | each arm against the reference, with disagreements |
