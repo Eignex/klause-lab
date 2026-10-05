@@ -114,9 +114,9 @@ it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab chec
 and the runner checks it within 10 s, which is also what a push hook would call. `lab schedules` lists them with the
 last commit and job; `lab unschedule <id>` removes one.
 
-A schedule of `backend=reference` runs keeps the reference current: with `"reference": "unsettled"` on its selections,
-each run solves only the problems new since the last one, plus those a smaller budget left unproven, so a long interval
-and a low priority keep it out of the sweep's way. Such schedules have no Regression trend.
+Schedules are for klause. The reference solvers do not change, so a reference run is a one-off experiment; rerunning
+one with `"reference": "unsettled"` on its selections solves only the problems added since, plus those a smaller budget
+left unproven. A schedule of reference runs would have no Regression trend.
 
 ## Crash safety
 
