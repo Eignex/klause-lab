@@ -139,4 +139,13 @@ class ExperimentsTest {
 
         assertEquals(listOf(false, true, false, true), listOf(proven, short, full, null).map { ReferenceFilterMode.UNSETTLED.keeps(it, 60_000) })
     }
+
+    @Test
+    fun `the default filter leaves out what the reference took over five seconds to decide`() {
+        val fast = Reference("scip", false, 3.0, true, true, 2_000, 60_000)
+        val slow = fast.copy(elapsedMs = 6_000)
+
+        assertEquals(listOf(true, false), listOf(fast, slow).map { ReferenceFilterMode.DECIDED.keeps(it, 60_000) })
+        assertEquals(listOf(true, false), listOf(fast, slow).map { ReferenceFilterMode.PROVEN.keeps(it, 60_000) })
+    }
 }

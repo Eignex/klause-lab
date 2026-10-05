@@ -211,9 +211,12 @@ object SelectionsSerializer : JsonTransformingSerializer<List<Map<String, String
  * there is nothing to judge it by, and dropping it would empty a collection no reference has reached yet.
  */
 enum class ReferenceFilterMode {
-    /** Leave out the problems the reference ran and left undecided within its budget: too hard to measure klause on. */
+    /**
+     * Leave out the problems the reference left undecided, or took over [REFERENCE_SLOW_MS] to decide: too hard to
+     * measure klause on.
+     */
     DECIDED,
-    /** Keep only the problems the reference proved: an optimum, infeasibility, or a satisfied decision problem. */
+    /** Keep only the problems the reference proved within [REFERENCE_SLOW_MS]: an optimum, infeasibility, or a satisfied decision problem. */
     PROVEN,
     /** Keep only the problems with no reference verdict at all: what a reference run backfills. */
     MISSING,
@@ -226,8 +229,8 @@ enum class ReferenceFilterMode {
 
     /** Whether a run with [budgetMs] per case keeps a problem whose reference verdict is [reference], null when it has none. */
     fun keeps(reference: Reference?, budgetMs: Long): Boolean = when (this) {
-        DECIDED -> reference == null || reference.feasible != null
-        PROVEN -> reference != null && reference.proven
+        DECIDED -> reference == null || reference.feasible != null && reference.elapsedMs <= REFERENCE_SLOW_MS
+        PROVEN -> reference != null && reference.proven && reference.elapsedMs <= REFERENCE_SLOW_MS
         MISSING -> reference == null
         UNSETTLED -> reference == null || !reference.proven && reference.budgetMs < budgetMs
         ANY -> true
@@ -239,4 +242,7 @@ fun <T> interleave(lists: List<List<T>>): List<T> =
     (0 until (lists.maxOfOrNull { it.size } ?: 0)).flatMap { k -> lists.mapNotNull { it.getOrNull(k) } }
 
 const val DEFAULT_REF = "main"
+
+/** A reference verdict slower than this marks a problem too hard for `decided` and `proven` to keep. */
+const val REFERENCE_SLOW_MS = 5_000L
 private const val DEFAULT_TIMEOUT_MS = 60_000L
