@@ -122,7 +122,9 @@ object Experiments {
         require(spec.grid.values.none { it.isEmpty() }) { "every grid axis needs at least one value" }
         require(spec.problems.isNotEmpty()) { "problems must name at least one selection" }
         for (selection in spec.problems) {
-            require(selection["suite"]?.isNotBlank() == true) { "every problems selection needs a suite" }
+            require(selection["suite"]?.isNotBlank() == true || selection["set"]?.isNotBlank() == true) {
+                "every problems selection needs a suite or a set"
+            }
             for ((key, value) in selection) {
                 require(key in PROBLEM_KEYS) { "unknown problems key '$key' (have ${PROBLEM_KEYS.sorted()})" }
                 requireValue(key, value)
@@ -155,7 +157,7 @@ object Experiments {
      * returns. Null otherwise.
      */
     fun defaultCapped(selection: Map<String, String>, selected: List<Problem>): String? {
-        if ("per-family" in selection || "name" in selection) return null
+        if ("per-family" in selection || "name" in selection || "set" in selection) return null
         val families = selected.groupingBy { it.family }.eachCount()
         if (families.size < 2 || families.values.any { it != 1 }) return null
         return "every one of ${families.size} families gave one problem, likely the suite's default of one per family; " +
@@ -181,10 +183,12 @@ object Experiments {
     }
 
     /** What a selection's `reference` filter keeps, by default `decided`, or `any` when the experiment itself runs the
-     *  reference solver: its own verdicts are what it is there to produce. */
+     *  reference solver, whose own verdicts are what it is there to produce, or the selection names a set, which was
+     *  drawn with the reference and is meant to stay as it is. */
     fun referenceFilter(spec: ExperimentSpec, selection: Map<String, String>): ReferenceFilterMode =
         selection[REFERENCE_KEY]?.let { v -> ReferenceFilterMode.entries.first { it.name.equals(v, ignoreCase = true) } }
-            ?: if (arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) ReferenceFilterMode.ANY else ReferenceFilterMode.DECIDED
+            ?: if ("set" in selection || arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) ReferenceFilterMode.ANY
+            else ReferenceFilterMode.DECIDED
 
     /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
      *  `$JOB_DIR/cases/<index>`. */
@@ -226,7 +230,7 @@ object Experiments {
     private val NAME = Regex("[A-Za-z0-9._-]+")
     private const val REFERENCE_KEY = "reference"
     private const val UNCAPPED = 1_000_000
-    private val PROBLEM_KEYS = setOf("suite", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
+    private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed")
     private const val CASE_OVERHEAD_SEC = 120L
     private const val FINGERPRINT_BYTES = 6

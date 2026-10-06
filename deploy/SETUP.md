@@ -25,7 +25,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 }
 ```
 
-- `problems` are `klause-bench select` filters: `suite` (required), `kind`, `category`, `tag`, `name`,
+- `problems` are `klause-bench select` filters: `suite` or `set` (one is required), `kind`, `category`, `tag`, `name`,
   `per-family`, `max`, `seed`, `balance`. A list of such selections pools their problems, each selection capped on
   its own, so `[{"suite": "hakank", "max": "60"}, {"suite": "xcsp3-cop", "max": "60"}]` takes 60 of each.
 - A selection's `reference` decides which problems it keeps by their verdict in the lab's reference results:
@@ -127,6 +127,10 @@ most suites take one per family unless asked for more.
 Schedules are for klause. The reference solvers do not change, so a reference run is a one-off experiment; rerunning
 one with `"reference": "unsettled"` on its selections solves only the problems added since, plus those a smaller budget
 left unproven. A schedule of reference runs would have no Regression trend.
+
+A `set` names a fixed problem set in klause-bench's `sets/` (see its README), selected whole and, by default, not
+reference-filtered: it was drawn from the reference and is meant to stay put. The status sweep runs `set=sweep`.
+`deploy/make-sets.py` draws the sets from `select features=true` output and the reference results.
 
 `deploy/specs/` holds the experiments the lab runs: `status-sweep.json` (schedule, every 120 s) and
 `klause-reference.json` (schedule, daily) for klause, and `reference.json`, the one-off reference run. Change a

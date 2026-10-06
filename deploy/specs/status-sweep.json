@@ -1,21 +1,6 @@
 {
   "name": "status-sweep",
-  "problems": [
-    {"suite": "hakank", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "mzn-bench", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "xcsp3-cop", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "xcsp3-csp", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "miplib2017", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "pb-comp-2025", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "pb-comp-wbo", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "maxsat-unweighted", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "maxsat-weighted", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "smtlib-qflia", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "smtlib-qflra", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "pb-comp", "per-family": "1", "max": "20", "seed": "1"},
-    {"suite": "pb07-opb", "per-family": "1", "max": "10", "seed": "1"},
-    {"suite": "satlib", "per-family": "2", "max": "40", "seed": "1"}
-  ],
+  "problems": [{"set": "sweep"}],
   "base": {"timeout": "10000"},
   "priority": -1
 }

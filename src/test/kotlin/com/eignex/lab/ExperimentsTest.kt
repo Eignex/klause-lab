@@ -170,4 +170,13 @@ class ExperimentsTest {
             Experiments.fingerprint(sweep.copy(name = "x@abc", base = sweep.base + ("ref" to "abc"), priority = -1, parallel = 3)))
         assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(spec(base = mapOf("timeout" to "60000"))))
     }
+
+    @Test
+    fun `a named set is selected whole, without a suite`() {
+        val sweep = ExperimentSpec("e", listOf(mapOf("set" to "sweep")))
+
+        Experiments.validate(sweep, maxParallel = 6)
+        assertEquals(ReferenceFilterMode.ANY, Experiments.referenceFilter(sweep, mapOf("set" to "sweep")))
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(ExperimentSpec("e", listOf(mapOf("max" to "5"))), maxParallel = 6) }
+    }
 }
