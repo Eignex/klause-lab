@@ -83,9 +83,16 @@ object Experiments {
             priority = 0,
             confirm = false,
         )
-        val digest = MessageDigest.getInstance("SHA-256").digest(Json.encodeToString(ExperimentSpec.serializer(), measured).toByteArray())
-        return digest.take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
+        return hash(Json.encodeToString(ExperimentSpec.serializer(), measured))
     }
+
+    /** What a run of [spec] measured over [problems], the ones it planned: its [fingerprint] and its problem set,
+     *  so a named set redrawn or a selection the reference filter shifts tells runs apart as an edited spec does. */
+    fun fingerprint(spec: ExperimentSpec, problems: Collection<Problem>): String =
+        hash(fingerprint(spec) + "\n" + problems.map { "${it.suite}/${it.problem}" }.sorted().joinToString("\n"))
+
+    private fun hash(text: String): String =
+        MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
 
     /** The arms of [spec], in order: each config over the base, crossed with the grid's combinations. Unlabelled
      *  arms are named by the values that set them apart from the other arms. */

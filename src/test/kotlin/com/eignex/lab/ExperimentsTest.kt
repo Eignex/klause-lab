@@ -179,4 +179,13 @@ class ExperimentsTest {
         assertEquals(ReferenceFilterMode.ANY, Experiments.referenceFilter(sweep, mapOf("set" to "sweep")))
         assertFailsWith<IllegalArgumentException> { Experiments.validate(ExperimentSpec("e", listOf(mapOf("max" to "5"))), maxParallel = 6) }
     }
+
+    @Test
+    fun `runs of one spec over different problems are told apart`() {
+        val sweep = spec(base = mapOf("timeout" to "10000"))
+        val a = listOf(Problem("s", "a"), Problem("s", "b"))
+
+        assertEquals(Experiments.fingerprint(sweep, a), Experiments.fingerprint(sweep, a.reversed()))
+        assertNotEquals(Experiments.fingerprint(sweep, a), Experiments.fingerprint(sweep, a + Problem("s", "c")))
+    }
 }

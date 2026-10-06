@@ -121,8 +121,9 @@ now. The schedule keeps its phase unless `next-in-hours` sets when it is next ch
 staggered.
 
 The Regression trend shows the runs of the schedule's current experiment: a run of an edited one measured something
-else. Runs match when their experiments agree on problems, arms, seeds and repeats; name, priority and `parallel` do
-not count. `show them` brings back the earlier runs, each change of experiment marked by a dashed line.
+else. Runs match when their experiments agree on selections, arms, seeds and repeats (name, priority and `parallel` do
+not count) and they planned the same problems, so a named set redrawn in place, or a selection the reference filter
+shifts, starts a new line just as an edited spec does. `show them` brings back the earlier runs, each change of experiment marked by a dashed line.
 
 Planning logs each selection: its arguments, how many problems the bench selected, how many the reference filter
 left out and how many were planned. A selection without `per-family` whose every family gave one problem is flagged:

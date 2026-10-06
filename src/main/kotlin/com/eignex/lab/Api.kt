@@ -105,7 +105,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // something else, and plotted alongside reads as a regression.
             val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(it.experiment) }
             val all = call.parameters["all"] != null || current == null
-            val shown = if (all) runs else runs.filter { it.spec == current }
+            // The problems the latest run of that spec planned: a set redrawn since is another line, as an edit is.
+            val latest = runs.lastOrNull { it.experiment == current }?.spec
+            val shown = if (all) runs else runs.filter { it.spec == latest }
             if (call.wantsHtml()) {
                 call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, runs.size - shown.size, all),
                     ContentType.Text.Html)

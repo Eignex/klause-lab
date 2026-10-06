@@ -15,8 +15,10 @@ data class SuiteShare(val problems: Int, val solved: Double)
 data class TrendRun(
     val job: Long,
     val sha: String,
-    /** The run's [Experiments.fingerprint]: runs that share one measured the same thing. */
+    /** The run's spec and problems ([Experiments.fingerprint] of both): runs that share one measured the same thing. */
     val spec: String,
+    /** The run's spec alone ([Experiments.fingerprint]), which the schedule's current spec is matched by. */
+    val experiment: String = "",
     /** When the run finished, or was queued while it has not. */
     val at: Long,
     val finished: Boolean,
@@ -61,7 +63,7 @@ object Trend {
             val own = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
             val trend = run(job, arms, cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
                 ?: return@mapNotNull null
-            val spec = Experiments.fingerprint(checkNotNull(job.experiment))
+            val spec = trend.spec
             val flips = previous?.takeIf { it.first == spec && job.status == Status.DONE }?.let { Confirm.flips(it.second, own) }
             if (job.status == Status.DONE) previous = spec to own
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
@@ -99,7 +101,8 @@ object Trend {
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
-            spec = job.experiment?.let(Experiments::fingerprint).orEmpty(),
+            spec = job.experiment?.let { Experiments.fingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
+            experiment = job.experiment?.let(Experiments::fingerprint).orEmpty(),
             at = job.finishedAt ?: job.createdAt,
             finished = job.status !in ACTIVE,
             cases = own.size,
