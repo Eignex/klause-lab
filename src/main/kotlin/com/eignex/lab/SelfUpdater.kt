@@ -34,7 +34,8 @@ class SelfUpdater(
         if (!requested && lastCheck?.let { now - it < intervalMs } == true) return false
         lastCheck = now
         requestFile?.delete()
-        if (exec(dir, listOf("git", "fetch", "-q", "origin"), null).first != 0) {
+        // Checked between a running job's cases, so off the solves' cores.
+        if (exec(dir, Background.prefix + listOf("git", "fetch", "-q", "origin"), null).first != 0) {
             println("self-update: fetch failed")
             return false
         }

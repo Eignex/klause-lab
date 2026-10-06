@@ -137,6 +137,8 @@ runs against each other problem by problem, not just by its totals:
   the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.
 - Experiments run 4 cases at a time by default, one per performance core (see What a case runs in), and the lab never updates
   itself while a case runs (see Updating).
+- The lab's own work beside the cases runs in the background, which on macOS confines it to the efficiency cores:
+  the API service, the runner's git checks during a job and update builds. Setup steps run alone, at full speed.
 
 Schedules are for klause. The reference solvers do not change, so a reference run is a one-off experiment; rerunning
 one with `"reference": "unsettled"` on its selections solves only the problems added since, plus those a smaller budget

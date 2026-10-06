@@ -570,8 +570,10 @@ class Runner(private val config: Config, private val store: Store) {
         check(process.exitValue() == 0) { "setup step failed (${process.exitValue()}): $cmd — see setup.log" }
     }
 
+    /** Run a git command the runner needs beside the cases (a schedule's check, removing a worktree) in the
+     *  background, off the solves' cores. Setup steps, which run alone, go through [sh] at full speed. */
     private fun capture(dir: File, cmd: String): String {
-        val process = ProcessBuilder("bash", "-c", cmd).directory(dir).redirectErrorStream(true).start()
+        val process = ProcessBuilder(Background.prefix + listOf("bash", "-c", cmd)).directory(dir).redirectErrorStream(true).start()
         val out = process.inputStream.bufferedReader().readText().trim()
         check(process.waitFor() == 0) { "failed: $cmd: $out" }
         return out

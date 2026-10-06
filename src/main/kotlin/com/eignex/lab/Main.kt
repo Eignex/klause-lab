@@ -24,7 +24,10 @@ fun main(args: Array<String>) {
     val store = Store(config.database)
     println("klause-lab $mode: data=${config.dataDir} repo=${config.repoUrl} corpus=${config.corpusDir}")
     when (mode) {
-        "api" -> serveApi(config, store, host)
+        "api" -> {
+            Background.self()
+            serveApi(config, store, host)
+        }
         "runner" -> Runner(config, store).apply { installShutdownHook() }.loop()
     }
 }
