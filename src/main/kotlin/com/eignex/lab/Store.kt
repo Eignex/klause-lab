@@ -365,17 +365,23 @@ class Store(file: Path) {
         statement.executeQuery().use { rows -> if (rows.next()) job(rows) else null }
     }?.let { it.copy(commands = commands(it.id)) }
 
-    /** The job to work on: one left RUNNING by a crashed runner first, else the queued, unpaused job with the highest
-     *  priority, oldest first, claimed. */
+    /**
+     * The job to work on: one left RUNNING by a crashed runner first, else the queued, unpaused job with the highest
+     * priority, claimed. Among equals, the job whose series last finished a run longest ago goes first, one that never
+     * has before any that has, then the oldest: so a schedule that just ran cannot keep going ahead of one that has
+     * waited. A series is a schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
+     */
     @Synchronized
     fun next(): Job? = transaction {
+        // SQLite sorts NULL first ascending: a series that never finished a run goes before one that has.
         val running = connection.prepareStatement("SELECT id FROM jobs WHERE status = ? ORDER BY id LIMIT 1").use {
             it.setString(1, Status.RUNNING.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
         val id = running ?: connection.prepareStatement(
             "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
-                "ORDER BY priority DESC, id LIMIT 1",
+                "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+                "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id LIMIT 1",
         ).use {
             it.setString(1, Status.QUEUED.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
@@ -761,3 +767,8 @@ class Store(file: Path) {
 }
 
 fun now(): Long = System.currentTimeMillis()
+
+/** A job's series in SQL, for the job in [next]'s outer query and the runs [next] looks back over: its name before
+ *  any `@`, so every run a schedule queues shares its schedule's name. */
+private const val SERIES_J = "CASE WHEN instr(jobs.name, '@') > 0 THEN substr(jobs.name, 1, instr(jobs.name, '@') - 1) ELSE jobs.name END"
+private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.name, 1, instr(r.name, '@') - 1) ELSE r.name END"

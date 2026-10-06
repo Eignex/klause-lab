@@ -86,6 +86,21 @@ class StoreTest {
     }
 
     @Test
+    fun `among equal priorities the series that ran longest ago goes first`() {
+        val store = store()
+        val ran = store.create("a@1", "main", listOf("true" to 10L))
+        store.next()
+        store.finish(ran, Status.DONE)
+        val again = store.create("a@2", "main", listOf("true" to 10L))
+        val waiting = store.create("b@1", "main", listOf("true" to 10L))
+
+        val first = store.next()?.id
+        store.finish(waiting, Status.DONE)
+
+        assertEquals(listOf(waiting, again), listOf(first, store.next()?.id))
+    }
+
+    @Test
     fun `the highest priority queued job is taken first`() {
         val store = store()
         store.create("low", "main", listOf("true" to 10L))

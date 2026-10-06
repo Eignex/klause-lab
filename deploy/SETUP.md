@@ -233,7 +233,9 @@ turns it off.
 `deploy/lab` wraps the API with curl, jq and rsync. Set `LAB_HOST` to override the default server, `192.168.50.104`.
 
 Experiments run highest priority first (`"priority"` in the spec, default 0; `lab priority <id> <n>` changes it
-later), oldest first within one priority. A running experiment checks before each case whether it was paused (`lab
+later). Within one priority, the job whose series last finished a run longest ago goes first (a schedule's runs
+share its name, an experiment's reruns their name; one that never ran goes before all), then the oldest, so a
+schedule that just ran does not keep going ahead of one that has waited. A running experiment checks before each case whether it was paused (`lab
 pause <id>`) or a higher-priority one is waiting; if so it starts no more, lets its running cases finish, and goes
 back to the queue with its worktrees and finished cases kept, resuming at its next case when it is taken again. `lab
 resume <id>` releases a paused one.
