@@ -26,6 +26,9 @@ data class TrendRun(
     val proven: Double,
     val unsupported: Int,
     val errors: Int,
+    /** Problems where the run contradicts the reference: a proof against its solution, a solution beyond its proven
+     *  optimum, a different proven optimum. Each is a soundness bug in one of them. */
+    val disagreements: Int = 0,
     /** Mean PAR-2 seconds. */
     val par2: Estimate,
     val suites: Map<String, SuiteShare>,
@@ -37,9 +40,17 @@ object Trend {
         store.jobs(limit = MAX_RUNS, name = name)
             .filter { it.experiment != null && it.name.startsWith("$name@") && it.status != Status.CANCELLED }
             .sortedBy { it.id }
-            .mapNotNull { job -> run(job, store.arms(job.id), store.cases(job.id)) }
+            .mapNotNull { job ->
+                val cases = store.cases(job.id)
+                run(job, store.arms(job.id), cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
+            }
 
-    fun run(job: Job, arms: List<PlannedArm>, cases: List<CaseResult>): TrendRun? {
+    fun run(
+        job: Job,
+        arms: List<PlannedArm>,
+        cases: List<CaseResult>,
+        references: Map<Pair<String, String>, Reference> = emptyMap(),
+    ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
         val own = cases.filter { it.arm == label }
         val stats = Stats.of(listOf(label), own).arms.single()
@@ -64,6 +75,7 @@ object Trend {
             proven = summary.proven / n,
             unsupported = summary.unsupported,
             errors = summary.errors,
+            disagreements = References.compare(listOf(label), own, references).disagreements.size,
             par2 = stats.par2,
             suites = suites,
         )

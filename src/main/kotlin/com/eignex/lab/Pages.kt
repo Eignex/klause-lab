@@ -412,20 +412,25 @@ internal fun trendPage(
     append("<h2>Solved and proven <small>% of the problems each run ran; band: 95% interval of solved</small></h2>")
     append("<div class=\"legend\"><span><i style=\"background:var(--series-1)\"></i>solved</span>")
     append("<span><i style=\"background:var(--series-2)\"></i>proven</span>")
-    append("<span><i class=\"hollow\"></i>run still going</span></div>")
+    append("<span><i class=\"hollow\"></i>run still going</span>")
+    append("<span><i class=\"flag\"></i>disagrees with the reference</span></div>")
     append("<div class=\"chart\" id=\"chart-solved\"></div>")
     append("<h2>PAR-2 time <small>mean seconds per problem, an unsolved one charged twice its budget; lower is better</small></h2>")
     append("<div class=\"chart\" id=\"chart-par2\"></div>")
     append("<h2>Solved by suite <small>% of each suite's problems</small></h2><div class=\"multiples\" id=\"suites\"></div>")
     append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
     append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
-    append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th></tr>")
+    append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>")
+    append("<th class=\"num\">PAR-2 s</th></tr>")
     for (run in runs.asReversed()) {
         val commit = commitUrl(repoUrl, run.sha)?.let { "<a href=\"$it\">${run.sha.take(9)}</a>" } ?: run.sha.take(9)
         append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a>${if (run.finished) "" else " <small class=\"muted\">running</small>"}</td>")
         append("<td><code>$commit</code></td><td>${ago(run.at)}</td><td class=\"num\">${run.problems}</td>")
         append("<td class=\"num\">${percent(run.solved.value)} <small class=\"muted\">${percent(run.solved.low)}–${percent(run.solved.high)}</small></td>")
         append("<td class=\"num\">${percent(run.proven)}</td><td class=\"num\">${run.unsupported}</td><td class=\"num\">${run.errors}</td>")
+        append("<td class=\"num\">")
+        append(if (run.disagreements > 0) "<a class=\"FAILED\" href=\"/jobs/${run.job}\">${run.disagreements}</a>" else "0")
+        append("</td>")
         append("<td class=\"num\">${"%.2f".format(run.par2.value)}</td></tr>")
     }
     append("</table></div><div id=\"tip\" class=\"tip\" hidden></div>")
@@ -535,6 +540,12 @@ private const val TREND_SCRIPT = """<script>
         el('circle', {cx: p[0], cy: p[1], r: 4, fill: p[2].finished ? s.color : 'var(--bg)', stroke: p[2].finished ? 'var(--bg)' : s.color,
           'stroke-width': 2}, svg);
       }
+      // A run that contradicts the reference is ringed on the first series, so a soundness bug shows at its commit.
+      if (s === series[0]) {
+        for (const p of pts) {
+          if (p[2].disagreements > 0) el('circle', {cx: p[0], cy: p[1], r: 8, fill: 'none', stroke: 'var(--bad)', 'stroke-width': 2}, svg);
+        }
+      }
       if (opts.endLabels && pts.length) {
         const last = pts[pts.length - 1];
         el('text', {x: last[0] + 10, y: last[1] + 4, class: 'endlabel'}, svg).textContent = s.name + ' ' + y.fmt(s.value(last[2]));
@@ -564,7 +575,7 @@ private const val TREND_SCRIPT = """<script>
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['solved', pct(r.solved.value) + ' (' + pct(r.solved.low) + '–' + pct(r.solved.high) + ')'],
       ['proven', pct(r.proven)], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
-      ['unsupported', r.unsupported], ['errors', r.errors], ['problems', r.problems],
+      ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['problems', r.problems],
     ];
     if (suite && r.suites[suite]) rows.unshift([suite, pct(r.suites[suite].solved) + ' of ' + r.suites[suite].problems]);
     tip.innerHTML = rows.map(function (kv) { return '<div><span>' + kv[0] + '</span><b>' + kv[1] + '</b></div>'; }).join('');
@@ -1011,7 +1022,7 @@ tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
 .endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}
 .legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin:-4px 0 6px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-.legend i.hollow{border:2px solid var(--series-1);width:6px;height:6px}
+.legend i.hollow{border:2px solid var(--series-1);width:6px;height:6px}.legend i.flag{border:2px solid var(--bad);width:6px;height:6px;background:none}
 .multiples{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px 20px}
 .mtitle{font-size:12px;color:var(--muted);margin-bottom:2px}
 .tip{position:absolute;z-index:5;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;

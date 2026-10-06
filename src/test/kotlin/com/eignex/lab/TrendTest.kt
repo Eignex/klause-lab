@@ -30,4 +30,13 @@ class TrendTest {
         assertEquals(listOf(true, false), runs.map { it.finished })
         assertEquals(mapOf("a" to 1.0, "b" to 0.5), runs[1].suites.mapValues { it.value.solved })
     }
+
+    @Test
+    fun `a run that contradicts the reference counts its disagreements`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        store.putReferences(listOf(("" to "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        run(store, "sweep@aaa", listOf(true, false))
+
+        assertEquals(listOf(1), Trend.runs(store, "sweep").map { it.disagreements })
+    }
 }
