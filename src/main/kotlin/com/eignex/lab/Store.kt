@@ -477,6 +477,18 @@ class Store(file: Path) {
         }
     }
 
+    /**
+     * Give schedule [id] a new [experiment], and [intervalSec] when set. Its last commit is forgotten, so the runner
+     * queues the new experiment at the ref's commit on its next check; a run still going is waited for as before.
+     * False when there is no such schedule.
+     */
+    @Synchronized
+    fun updateSchedule(id: Long, experiment: ExperimentSpec, intervalSec: Long?): Boolean = update(
+        "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?, interval_sec = COALESCE(?, interval_sec), " +
+            "last_sha = NULL, checked_at = NULL WHERE id = ?",
+        Json.encodeToString(experiment), experiment.parallel ?: 0, experiment.priority, intervalSec, id,
+    ) == 1
+
     @Synchronized
     fun deleteSchedule(id: Long): Boolean = update("DELETE FROM schedules WHERE id = ?", id) == 1
 

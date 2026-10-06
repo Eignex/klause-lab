@@ -257,10 +257,11 @@ class Runner(private val config: Config, private val store: Store) {
             val selected = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
             val references = store.references(selected.map { it.collection to it.problem })
             val kept = selected.filter { mode.keeps(references[it.collection to it.problem], budgetMs) }
-            if (kept.size < selected.size) {
-                log(job.id, "selection $index: ${selected.size - kept.size} of ${selected.size} problems left out by reference=${mode.name.lowercase()}")
-            }
-            if (refill) Experiments.cap(kept, problemSelection["per-family"]?.toIntOrNull(), problemSelection["max"]?.toIntOrNull()) else kept
+            val planned = if (refill) Experiments.cap(kept, problemSelection["per-family"]?.toIntOrNull(), problemSelection["max"]?.toIntOrNull()) else kept
+            log(job.id, "selection $index (${Experiments.selectArgs(problemSelection)}, reference=${mode.name.lowercase()}): " +
+                "${selected.size} selected, ${selected.size - kept.size} left out by the reference filter, ${planned.size} planned")
+            Experiments.defaultCapped(problemSelection, selected)?.let { log(job.id, "selection $index: $it") }
+            planned
         }).distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)

@@ -112,11 +112,25 @@ waits its turn by priority like any other. A scheduled experiment's configs name
 nothing. A check asks origin for a branch or tag's commit with `git ls-remote`, one small request, and fetches only when
 it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab check <id>` makes a schedule due at once,
 and the runner checks it within 10 s, which is also what a push hook would call. `lab schedules` lists them with the
-last commit and job; `lab unschedule <id>` removes one.
+last commit and job; `lab unschedule <id>` removes one. `lab reschedule <id> <experiment.json> [interval-sec]`
+replaces a schedule's experiment and forgets its last commit, so the new experiment runs at the ref's commit on the
+next check, once a run still going has ended.
+
+The Regression trend shows the runs of the schedule's current experiment: a run of an edited one measured something
+else. Runs match when their experiments agree on problems, arms, seeds and repeats; name, priority and `parallel` do
+not count. `show them` brings back the earlier runs, each change of experiment marked by a dashed line.
+
+Planning logs each selection: its arguments, how many problems the bench selected, how many the reference filter
+left out and how many were planned. A selection without `per-family` whose every family gave one problem is flagged:
+most suites take one per family unless asked for more.
 
 Schedules are for klause. The reference solvers do not change, so a reference run is a one-off experiment; rerunning
 one with `"reference": "unsettled"` on its selections solves only the problems added since, plus those a smaller budget
 left unproven. A schedule of reference runs would have no Regression trend.
+
+`deploy/specs/` holds the experiments the lab runs: `status-sweep.json` (schedule, every 120 s) and
+`klause-reference.json` (schedule, daily) for klause, and `reference.json`, the one-off reference run. Change a
+schedule by editing its file and running `lab reschedule`.
 
 ## Crash safety
 
@@ -226,6 +240,7 @@ background to be told when a job is done.
 deploy/lab run restarts-ab.json
 deploy/lab ls
 deploy/lab cases 7            # each case: status, arm, problem, result
+deploy/lab tail 7             # the last 8 kB of the job's log: planning, commands, exits
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
@@ -256,8 +271,9 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
+| `POST` | `/schedules/{id}` | `{"experiment": <spec>, "intervalSec"?}`: replace a schedule's experiment, rerun at its ref |
 | `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
-| `GET` | `/trend[?name=<schedule>]` | a schedule's runs over its commits; the first klause schedule without a name |
+| `GET` | `/trend[?name=<schedule>][&all=1]` | a schedule's runs of its current experiment, or all of them; the first klause schedule without a name |
 | `GET` | `/references[?q=&solver=&collection=&verdict=]` | reference coverage, or the results the filters keep |
 | `GET` | `/problem?collection=<c>&problem=<p>` | one problem: every reference solver's verdict and every lab run |
 | `GET` | `/experiments/{id}/reference` | each arm against the reference, with disagreements |

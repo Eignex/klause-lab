@@ -1,9 +1,11 @@
 package com.eignex.lab
 
+import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonTransformingSerializer
@@ -63,6 +65,26 @@ data class Problem(
 data class Case(val problem: Int, val arm: Int, val seed: Long?, val repeat: Int = 0)
 
 object Experiments {
+    /**
+     * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
+     * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule
+     * shares one fingerprint and an edited one starts another.
+     */
+    fun fingerprint(spec: ExperimentSpec): String {
+        val measured = spec.copy(
+            name = "",
+            problems = spec.problems.map { it.toSortedMap() },
+            base = (spec.base - "ref").toSortedMap(),
+            configs = spec.configs.map { it.toSortedMap() },
+            grid = spec.grid.toSortedMap(),
+            parallel = null,
+            priority = 0,
+            confirm = false,
+        )
+        val digest = MessageDigest.getInstance("SHA-256").digest(Json.encodeToString(ExperimentSpec.serializer(), measured).toByteArray())
+        return digest.take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
+    }
+
     /** The arms of [spec], in order: each config over the base, crossed with the grid's combinations. Unlabelled
      *  arms are named by the values that set them apart from the other arms. */
     fun arms(spec: ExperimentSpec): List<Arm> {
@@ -126,6 +148,19 @@ object Experiments {
     /** The bench arguments of one problems [selection]. */
     fun selectArgs(selection: Map<String, String>): String =
         selection.filterKeys { it != REFERENCE_KEY }.entries.joinToString(" ") { (key, value) -> quote("$key=$value") }
+
+    /**
+     * A warning when [selected] looks capped by its suite's own default rather than by [selection]: no `per-family`
+     * was asked for, yet every family gave exactly one problem, which is what a suite that defaults to one per family
+     * returns. Null otherwise.
+     */
+    fun defaultCapped(selection: Map<String, String>, selected: List<Problem>): String? {
+        if ("per-family" in selection || "name" in selection) return null
+        val families = selected.groupingBy { it.family }.eachCount()
+        if (families.size < 2 || families.values.any { it != 1 }) return null
+        return "every one of ${families.size} families gave one problem, likely the suite's default of one per family; " +
+            "set \"per-family\" to take more"
+    }
 
     /** Whether a selection's caps are applied by the lab, after [mode] filters, rather than by the bench before it. A
      *  format-balanced selection keeps the bench's caps: the balance is the bench's to strike. */
@@ -194,6 +229,7 @@ object Experiments {
     private val PROBLEM_KEYS = setOf("suite", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed")
     private const val CASE_OVERHEAD_SEC = 120L
+    private const val FINGERPRINT_BYTES = 6
     private const val MAX_REPEATS = 100
     private const val MS_PER_HOUR = 3_600_000.0
 }

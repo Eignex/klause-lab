@@ -5,6 +5,9 @@ import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 class ExperimentsTest {
     private fun spec(
@@ -147,5 +150,24 @@ class ExperimentsTest {
 
         assertEquals(listOf(true, false), listOf(fast, slow).map { ReferenceFilterMode.DECIDED.keeps(it, 60_000) })
         assertEquals(listOf(true, false), listOf(fast, slow).map { ReferenceFilterMode.PROVEN.keeps(it, 60_000) })
+    }
+
+    @Test
+    fun `a selection with one problem per family and no per-family is flagged as capped by the suite`() {
+        val one = listOf("a", "b", "c").map { Problem("s", "$it/1", family = it) }
+        val two = one + Problem("s", "a/2", family = "a")
+
+        assertNotNull(Experiments.defaultCapped(mapOf("suite" to "s"), one))
+        assertNull(Experiments.defaultCapped(mapOf("suite" to "s", "per-family" to "1"), one))
+        assertNull(Experiments.defaultCapped(mapOf("suite" to "s"), two))
+    }
+
+    @Test
+    fun `a fingerprint ignores how a spec runs but not what it measures`() {
+        val sweep = spec(base = mapOf("timeout" to "10000"))
+
+        assertEquals(Experiments.fingerprint(sweep),
+            Experiments.fingerprint(sweep.copy(name = "x@abc", base = sweep.base + ("ref" to "abc"), priority = -1, parallel = 3)))
+        assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(spec(base = mapOf("timeout" to "60000"))))
     }
 }

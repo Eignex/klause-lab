@@ -11,9 +11,10 @@
 #   lab pause <id> | lab resume <id>                         hold a job; a running one stops between its commands
 #   lab wait <id>...                                         block until every job given has ended; prints each end
 #   lab schedule <name> <ref> <experiment.json> <interval-sec>   rerun the experiment on every new commit of <ref>
+#   lab reschedule <id> <experiment.json> [interval-sec]     replace a schedule's experiment; it reruns at the ref now
 #   lab schedules | lab unschedule <id>
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
-#   lab ls | lab show <id> | lab cancel <id> | lab tail <id> <n> [out|err]
+#   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
@@ -58,6 +59,9 @@ schedule)
   jq -n --arg name "$1" --arg ref "$2" --argjson interval "$4" --slurpfile experiment "$3" \
     '{name: $name, ref: $ref, intervalSec: $interval, experiment: $experiment[0]}' |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/schedules"; echo ;;
+reschedule)
+  jq -n --argjson interval "${3:-null}" --slurpfile experiment "$2" '{intervalSec: $interval, experiment: $experiment[0]}' |
+    curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/schedules/$1"; echo ;;
 compare) echo "$url/compare?jobs=$(IFS=,; echo "$*")" ;;
 schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
       "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv' ;;
@@ -66,7 +70,9 @@ rm) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/dele
 unschedule) curl -sS -X POST "$url/schedules/$1/delete"; echo ;;
 pause) curl -sS -X POST "$url/jobs/$1/pause"; echo ;;
 resume) curl -sS -X POST "$url/jobs/$1/resume"; echo ;;
-tail) curl -fsS "$url/jobs/$1/files/$2.${3:-out}?tail=${TAIL_BYTES:-8000}" ;;
+tail)
+  if [[ -z "${2:-}" ]]; then curl -fsS "$url/jobs/$1/files/job.log?tail=${TAIL_BYTES:-8000}"
+  else curl -fsS "$url/jobs/$1/files/$2.${3:-out}?tail=${TAIL_BYTES:-8000}"; fi ;;
 fetch)
   dest="${2:-lab-jobs/$1}"; mkdir -p "$dest"
   curl -fsS "$url/jobs/$1/files" | jq -r '.[] | "\(.path)\t\(.bytes)"' | while IFS=$'\t' read -r path bytes; do

@@ -15,6 +15,8 @@ data class SuiteShare(val problems: Int, val solved: Double)
 data class TrendRun(
     val job: Long,
     val sha: String,
+    /** The run's [Experiments.fingerprint]: runs that share one measured the same thing. */
+    val spec: String,
     /** When the run finished, or was queued while it has not. */
     val at: Long,
     val finished: Boolean,
@@ -53,6 +55,7 @@ object Trend {
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
+            spec = job.experiment?.let(Experiments::fingerprint).orEmpty(),
             at = job.finishedAt ?: job.createdAt,
             finished = job.status !in ACTIVE,
             cases = own.size,

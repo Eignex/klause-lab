@@ -43,6 +43,10 @@ data class ScheduleSpec(
     val intervalSec: Long = 3600,
 )
 
+/** A schedule's new experiment, and its new interval when set. */
+@Serializable
+data class ScheduleUpdate(val experiment: ExperimentSpec, val intervalSec: Long? = null)
+
 @Serializable
 data class Created(val id: Long)
 
@@ -95,13 +99,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // A schedule of reference runs regenerates the reference; its trend says nothing about klause.
             val schedules = store.schedules()
                 .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
-                .map { it.name }
-            val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()
+            val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
             val runs = name?.let { Trend.runs(store, it) }.orEmpty()
+            // By default only the runs of the schedule's current experiment: a run of an earlier one measured
+            // something else, and plotted alongside reads as a regression.
+            val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(it.experiment) }
+            val all = call.parameters["all"] != null || current == null
+            val shown = if (all) runs else runs.filter { it.spec == current }
             if (call.wantsHtml()) {
-                call.respondText(trendPage(name, runs, config.repoUrl, schedules), ContentType.Text.Html)
+                call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, runs.size - shown.size, all),
+                    ContentType.Text.Html)
             } else {
-                call.respond(runs)
+                call.respond(shown)
             }
         }
         get("/references") {
@@ -241,15 +250,19 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = call.receive<ScheduleSpec>()
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
-            Experiments.validate(spec.experiment, config.maxParallel, config.cores)
-            require(Experiments.arms(spec.experiment).none { "ref" in it.values }) {
-                "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
-            }
+            validateScheduled(spec.experiment, config)
             requireRef(spec.ref, config)
             val id = store.createSchedule(spec.name, spec.ref, spec.experiment, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/schedules") { call.respond(store.schedules()) }
+        post("/schedules/{id}") {
+            val spec = call.receive<ScheduleUpdate>()
+            require(spec.intervalSec == null || spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
+            validateScheduled(spec.experiment, config)
+            val updated = store.updateSchedule(call.parameters["id"]!!.toLong(), spec.experiment, spec.intervalSec)
+            call.respond(if (updated) HttpStatusCode.OK else HttpStatusCode.NotFound, if (updated) "updated" else "no such schedule")
+        }
         // The runner's schedule thread finds it due within seconds; a push hook or relay can call this instead of waiting.
         post("/schedules/{id}/check") {
             val found = store.checkNow(call.parameters["id"]!!.toLong())
@@ -292,6 +305,13 @@ private const val MAX_COMPARED = 6
 /** The worktrees job [id] built, its own and those of its other commits; the mirror forgets them at its next prune. */
 private fun worktrees(config: Config, id: Long): List<File> =
     config.worktree(id).toFile().parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList()
+
+private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
+    Experiments.validate(experiment, config.maxParallel, config.cores)
+    require(Experiments.arms(experiment).none { "ref" in it.values }) {
+        "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
+    }
+}
 
 /** The latest finished experiment queued by the same schedule before [job], whose name is `<schedule>@<sha>`. */
 private fun previousRun(store: Store, job: Job): Long? =

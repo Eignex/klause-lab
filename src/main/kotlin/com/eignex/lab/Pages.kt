@@ -371,7 +371,15 @@ internal fun comparePage(
  * How a schedule's runs moved over its commits: solved and proven shares with the solved interval, PAR-2 time, and
  * solved share per suite, against commit or date. The runs ride in the page as JSON; a small script draws the charts.
  */
-internal fun trendPage(name: String?, runs: List<TrendRun>, repoUrl: String, schedules: List<String> = emptyList()): String = buildString {
+internal fun trendPage(
+    name: String?,
+    runs: List<TrendRun>,
+    repoUrl: String,
+    schedules: List<String> = emptyList(),
+    /** Runs left out because they ran an earlier experiment than the schedule's current one. */
+    earlier: Int = 0,
+    all: Boolean = false,
+): String = buildString {
     append(head("${name ?: "regression"} · klause lab", live = runs.any { !it.finished }, tab = Tab.REGRESSION))
     if (name == null) {
         append("<header><h1>Regression</h1></header><p class=\"muted\">No schedule yet: <code>lab schedule</code> sets one up, ")
@@ -386,9 +394,17 @@ internal fun trendPage(name: String?, runs: List<TrendRun>, repoUrl: String, sch
         }
         append("</div>")
     }
-    append("<p class=\"muted\">${runs.size} runs · <a href=\"/${query("name" to name)}\">its jobs</a></p></header>")
+    append("<p class=\"muted\">${runs.size} runs · <a href=\"/${query("name" to name)}\">its jobs</a>")
+    if (earlier > 0) {
+        append(" · $earlier earlier runs of a different experiment left out: <a href=\"/trend${query("name" to name, "all" to "1")}\">show them</a>")
+    }
+    val specs = runs.map { it.spec }.distinct().size
+    if (all && specs > 1) {
+        append(" · $specs experiments, each change marked by a dashed line: <a href=\"/trend${query("name" to name)}\">current only</a>")
+    }
+    append("</p></header>")
     if (runs.isEmpty()) {
-        append("<p class=\"muted\">No run of this schedule has results yet.</p></body></html>")
+        append("<p class=\"muted\">No run of this schedule's current experiment has results yet.</p></body></html>")
         return@buildString
     }
     append("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">x-axis</span>")
@@ -474,6 +490,12 @@ private const val TREND_SCRIPT = """<script>
       el('line', {x1: m.l, x2: m.l + pw, y1: yy(t), y2: yy(t), class: 'grid'}, svg);
       el('text', {x: m.l - 6, y: yy(t) + 4, 'text-anchor': 'end', class: 'tick'}, svg).textContent = y.fmt(t);
     }
+    // A run of a different experiment than the one before it starts a new line, behind a dashed marker.
+    for (let k = 1; k < order.length; k++) {
+      if (runs[order[k]].spec === runs[order[k - 1]].spec) continue;
+      const bx = (x(order[k]) + x(order[k - 1])) / 2;
+      el('line', {x1: bx, x2: bx, y1: m.t, y2: m.t + ph, stroke: 'var(--muted)', 'stroke-dasharray': '4 4'}, svg);
+    }
     if (xMode === 'date') {
       const n = Math.max(2, Math.min(5, runs.length, Math.floor(pw / 110)));
       for (let k = 0; k < n; k++) {
@@ -491,16 +513,22 @@ private const val TREND_SCRIPT = """<script>
     }
     for (const s of series) {
       if (s.band) {
-        const pts = order.map(function (i) { const b = s.band(runs[i]); return b ? [x(i), yy(b[0]), yy(b[1])] : null; }).filter(Boolean);
-        if (pts.length > 1) {
-          const d = 'M' + pts.map(function (p) { return p[0] + ',' + p[2]; }).join('L') +
-            'L' + pts.slice().reverse().map(function (p) { return p[0] + ',' + p[1]; }).join('L') + 'Z';
+        const pts = order.map(function (i) { const b = s.band(runs[i]); return b ? [x(i), yy(b[0]), yy(b[1]), runs[i].spec] : null; }).filter(Boolean);
+        const segments = [];
+        for (const p of pts) {
+          if (!segments.length || segments[segments.length - 1][0][3] !== p[3]) segments.push([]);
+          segments[segments.length - 1].push(p);
+        }
+        for (const seg of segments.filter(function (g) { return g.length > 1; })) {
+          const d = 'M' + seg.map(function (p) { return p[0] + ',' + p[2]; }).join('L') +
+            'L' + seg.slice().reverse().map(function (p) { return p[0] + ',' + p[1]; }).join('L') + 'Z';
           el('path', {d: d, fill: s.color, 'fill-opacity': 0.1, stroke: 'none'}, svg);
         }
       }
       const pts = order.map(function (i) { const v = s.value(runs[i]); return v == null ? null : [x(i), yy(v), runs[i]]; }).filter(Boolean);
       if (pts.length > 1) {
-        el('path', {d: 'M' + pts.map(function (p) { return p[0] + ',' + p[1]; }).join('L'), fill: 'none', stroke: s.color,
+        const d = pts.map(function (p, k) { return (k > 0 && pts[k - 1][2].spec === p[2].spec ? 'L' : 'M') + p[0] + ',' + p[1]; }).join('');
+        el('path', {d: d, fill: 'none', stroke: s.color,
           'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
       }
       for (const p of pts) {
