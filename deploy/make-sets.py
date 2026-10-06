@@ -23,8 +23,11 @@ SETS = ["open-int", "linear-real", "mip", "scheduling", "routing", "packing", "g
 # MiniZinc, where they would otherwise outnumber the SMT-LIB logics it is for.
 EXCLUDED_FORMATS = {"linear-real": {"MPS"}}
 # Each set's size: CSP/COP and SMT weigh more than MPS, SAT and PB. 250 in all.
-SIZES = {"globals": 35, "scheduling": 30, "routing": 25, "packing": 25, "open-int": 35, "linear-real": 35,
-         "mip": 20, "sat": 15, "pb": 15, "maxsat": 15}
+SIZES = {"globals": 30, "scheduling": 25, "routing": 20, "packing": 20, "open-int": 35, "linear-real": 35,
+         "mip": 25, "sat": 20, "pb": 20, "maxsat": 20}
+# The most of a set's picks in a tier one suite may take: hakank's many small models would otherwise fill the MiniZinc
+# share of every set it has a theme in.
+SUITE_SHARE = {"hakank": 0.15}
 # Sets made of others: `linear` is open-domain integers with linear reals as well.
 UNIONS = {"linear": ["open-int", "linear-real"], "sweep": SETS}
 # Difficulty tiers by the reference's time to prove. A set takes [EASY_SHARE] easy, [HARD] hard and medium for the
@@ -95,7 +98,10 @@ def main():
 
 
 def spread(candidates, n, rng):
-    """[n] of [candidates], one per (suite, family) per round, suites and families taken in a seeded order."""
+    """[n] of [candidates], one per (suite, family) per round, suites and families taken in a seeded order, no suite
+    beyond its SUITE_SHARE of [n] (at least one)."""
+    caps = {suite: max(1, int(n * share)) for suite, share in SUITE_SHARE.items()}
+    taken = defaultdict(int)
     families = defaultdict(list)
     for c in candidates:
         families[(c[0], c[1])].append(c)
@@ -114,11 +120,15 @@ def spread(candidates, n, rng):
         for s in suites:
             if by_suite[s]:
                 order.append(by_suite[s].pop())
+    def open(k):
+        return families[k] and taken[k[0]] < caps.get(k[0], n)
+
     chosen = []
-    while len(chosen) < n and any(families[k] for k in order):
+    while len(chosen) < n and any(open(k) for k in order):
         for k in order:
-            if families[k] and len(chosen) < n:
+            if open(k) and len(chosen) < n:
                 chosen.append(families[k].pop())
+                taken[k[0]] += 1
     return chosen
 
 
