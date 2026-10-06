@@ -126,6 +126,18 @@ Planning logs each selection: its arguments, how many problems the bench selecte
 left out and how many were planned. A selection without `per-family` whose every family gave one problem is flagged:
 most suites take one per family unless asked for more.
 
+A wall-clock budget makes any problem near it flip between runs on machine noise alone, so a schedule's trend reads
+runs against each other problem by problem, not just by its totals:
+
+- Each run shows, against the run before it of the same experiment, the problems it lost and gained, with a two-sided
+  sign test on them. Fifteen lost and none gained is p < 0.001 even when the solved shares' bands overlap.
+- A finished run that flipped problems queues a confirmation job, `<schedule>~confirm@<sha>`: just those problems (at
+  most 40), on both commits, alternating case by case so both see the same machine, three times each. A flip counts
+  only when the repeats agree with it; the trend shows `confirmed −lost +gained`, linking the job, whose page compares
+  the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.
+- The status sweep runs 4 cases at a time rather than 6, so its solvers compete less with each other and the docker
+  VM, and the lab never updates itself while a case runs (see Updating).
+
 Schedules are for klause. The reference solvers do not change, so a reference run is a one-off experiment; rerunning
 one with `"reference": "unsettled"` on its selections solves only the problems added since, plus those a smaller budget
 left unproven. A schedule of reference runs would have no Regression trend.

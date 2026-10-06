@@ -38,6 +38,8 @@ data class ExperimentSpec(
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
+    /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
+    val problemList: List<Problem> = emptyList(),
 )
 
 /** One configuration of an experiment: its [label] and the solve arguments, `ref` included. */
@@ -120,7 +122,7 @@ object Experiments {
         require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }
         require(spec.configs.isNotEmpty()) { "configs must not be empty" }
         require(spec.grid.values.none { it.isEmpty() }) { "every grid axis needs at least one value" }
-        require(spec.problems.isNotEmpty()) { "problems must name at least one selection" }
+        require(spec.problems.isNotEmpty() || spec.problemList.isNotEmpty()) { "problems must name at least one selection" }
         for (selection in spec.problems) {
             require(selection["suite"]?.isNotBlank() == true || selection["set"]?.isNotBlank() == true) {
                 "every problems selection needs a suite or a set"

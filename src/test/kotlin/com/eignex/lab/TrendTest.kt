@@ -39,4 +39,15 @@ class TrendTest {
 
         assertEquals(listOf(1), Trend.runs(store, "sweep").map { it.disagreements })
     }
+
+    @Test
+    fun `each run counts what it lost and gained against the run before`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        run(store, "sweep@aaa", listOf(true, true, false))
+        run(store, "sweep@bbb", listOf(false, true, true))
+
+        val runs = Trend.runs(store, "sweep")
+
+        assertEquals(listOf(null to null, 1 to 1), runs.map { it.lost to it.gained })
+    }
 }

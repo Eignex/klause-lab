@@ -2,5 +2,6 @@
   "name": "status-sweep",
   "problems": [{"set": "sweep"}],
   "base": {"timeout": "10000"},
+  "parallel": 4,
   "priority": -1
 }

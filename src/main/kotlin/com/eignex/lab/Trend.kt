@@ -29,6 +29,15 @@ data class TrendRun(
     /** Problems where the run contradicts the reference: a proof against its solution, a solution beyond its proven
      *  optimum, a different proven optimum. Each is a soundness bug in one of them. */
     val disagreements: Int = 0,
+    /** Against the run before it of the same experiment: problems lost and gained, and the sign test on them. Null for
+     *  a first run. */
+    val lost: Int? = null,
+    val gained: Int? = null,
+    val flipP: Double? = null,
+    /** The run's confirmation job, when its flips got one, and the flips its repeats agree with, once it has run. */
+    val confirmJob: Long? = null,
+    val confirmedLost: Int? = null,
+    val confirmedGained: Int? = null,
     /** Mean PAR-2 seconds. */
     val par2: Estimate,
     val suites: Map<String, SuiteShare>,
@@ -36,14 +45,35 @@ data class TrendRun(
 
 object Trend {
     /** Every run a schedule named [name] queued, oldest first; an experiment of several arms is read by its first. */
-    fun runs(store: Store, name: String): List<TrendRun> =
-        store.jobs(limit = MAX_RUNS, name = name)
+    fun runs(store: Store, name: String): List<TrendRun> {
+        val jobs = store.jobs(limit = MAX_RUNS, name = name)
             .filter { it.experiment != null && it.name.startsWith("$name@") && it.status != Status.CANCELLED }
             .sortedBy { it.id }
-            .mapNotNull { job ->
-                val cases = store.cases(job.id)
-                run(job, store.arms(job.id), cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
-            }
+        val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX)
+            .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
+            .associateBy { it.name.substringAfter('@') }
+        var previous: Pair<String, List<CaseResult>>? = null
+        return jobs.mapNotNull { job ->
+            val arms = store.arms(job.id)
+            val cases = store.cases(job.id)
+            val own = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
+            val trend = run(job, arms, cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
+                ?: return@mapNotNull null
+            val spec = Experiments.fingerprint(checkNotNull(job.experiment))
+            val flips = previous?.takeIf { it.first == spec && job.status == Status.DONE }?.let { Confirm.flips(it.second, own) }
+            if (job.status == Status.DONE) previous = spec to own
+            val confirmation = confirmations[job.name.substringAfter('@')]
+            val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(store.cases(it.id)) }
+            trend.copy(
+                lost = flips?.lost?.size,
+                gained = flips?.gained?.size,
+                flipP = flips?.pValue,
+                confirmJob = confirmation?.id,
+                confirmedLost = confirmed?.lost?.size,
+                confirmedGained = confirmed?.gained?.size,
+            )
+        }
+    }
 
     fun run(
         job: Job,

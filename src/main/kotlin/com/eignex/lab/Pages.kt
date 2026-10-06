@@ -427,6 +427,8 @@ internal fun trendPage(
     append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
     append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
     append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>")
+    append("<th class=\"num\" title=\"against the run before: problems lost and gained, the sign test, and what reruns confirmed\">")
+    append("vs previous</th>")
     append("<th class=\"num\">PAR-2 s</th></tr>")
     for (run in runs.asReversed()) {
         val commit = commitUrl(repoUrl, run.sha)?.let { "<a href=\"$it\">${run.sha.take(9)}</a>" } ?: run.sha.take(9)
@@ -437,6 +439,7 @@ internal fun trendPage(
         append("<td class=\"num\">")
         append(if (run.disagreements > 0) "<a class=\"FAILED\" href=\"/jobs/${run.job}\">${run.disagreements}</a>" else "0")
         append("</td>")
+        append("<td class=\"num\">${flipCell(run)}</td>")
         append("<td class=\"num\">${"%.2f".format(run.par2.value)}</td></tr>")
     }
     append("</table></div><div id=\"tip\" class=\"tip\" hidden></div>")
@@ -447,6 +450,29 @@ internal fun trendPage(
     append(TREND_SCRIPT)
     append("</body></html>")
 }
+
+/** A run against the one before it: lost and gained, the sign test when it is telling, and what reruns confirmed. */
+private fun flipCell(run: TrendRun): String = buildString {
+    val lost = run.lost ?: return "–"
+    val gained = run.gained ?: 0
+    append("−$lost +$gained")
+    run.flipP?.takeIf { it < FLIP_SIGNIFICANCE }?.let { append(" <small>p=%.3f</small>".format(it)) }
+    val job = run.confirmJob ?: return@buildString
+    val confirmedLost = run.confirmedLost
+    append(" · <a href=\"/jobs/$job\">")
+    append(
+        if (confirmedLost == null) {
+            "confirming"
+        } else {
+            val cls = if (confirmedLost > 0) " class=\"FAILED\"" else ""
+            "<span$cls>confirmed −$confirmedLost +${run.confirmedGained ?: 0}</span>"
+        },
+    )
+    append("</a>")
+}
+
+/** Below this, a run's flips against the one before lean one way more than chance would. */
+private const val FLIP_SIGNIFICANCE = 0.05
 
 private fun percent(share: Double) = "%.1f%%".format(share * 100)
 
@@ -582,6 +608,8 @@ private const val TREND_SCRIPT = """<script>
       ['solved', pct(r.solved.value) + ' (' + pct(r.solved.low) + '–' + pct(r.solved.high) + ')'],
       ['proven', pct(r.proven)], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
       ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['problems', r.problems],
+      ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
+      ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];
     if (suite && r.suites[suite]) rows.unshift([suite, pct(r.suites[suite].solved) + ' of ' + r.suites[suite].problems]);
     tip.innerHTML = rows.map(function (kv) { return '<div><span>' + kv[0] + '</span><b>' + kv[1] + '</b></div>'; }).join('');

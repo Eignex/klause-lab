@@ -109,6 +109,7 @@ class Runner(private val config: Config, private val store: Store) {
         store.finish(job.id, Status.DONE)
         removeWorktree(job.id)
         log(job.id, "job finished")
+        runCatching { queueConfirmation(job) }.onFailure { log(job.id, "could not queue a confirmation: ${it.message}") }
     }
 
     /**
@@ -167,6 +168,33 @@ class Runner(private val config: Config, private val store: Store) {
             pool.shutdown()
             pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
         }
+    }
+
+    /**
+     * After a scheduled run, queue a [Confirm] job for the problems it flipped against the run before it of the same
+     * experiment at another commit. Nothing is queued for a confirmation itself, a first run, or a run with no flips.
+     */
+    private fun queueConfirmation(job: Job) {
+        val spec = job.experiment ?: return
+        val series = job.name.substringBefore('@', "")
+        if (series.isEmpty() || series.endsWith(Confirm.SUFFIX) || store.schedules().none { it.name == series }) return
+        val fingerprint = Experiments.fingerprint(spec)
+        val previous = store.jobs(limit = PREVIOUS_RUNS, name = series)
+            .filter { it.id < job.id && it.status == Status.DONE && it.experiment?.let(Experiments::fingerprint) == fingerprint }
+            .maxByOrNull { it.id } ?: return
+        val before = previous.sha ?: return
+        val after = checkNotNull(store.job(job.id)?.sha)
+        if (before == after) return
+        val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
+        if (flips.lost.isEmpty() && flips.gained.isEmpty()) return
+        val confirmation = Confirm.spec(series, spec, before, after, flips)
+        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.maxParallel, confirmation.priority, confirmation)
+        log(job.id, "${flips.lost.size} lost, ${flips.gained.size} gained against job ${previous.id}: queued confirmation job $id")
+    }
+
+    private fun firstArmCases(jobId: Long): List<CaseResult> {
+        val label = store.arms(jobId).firstOrNull()?.arm?.label ?: return emptyList()
+        return store.cases(jobId).filter { it.arm == label }
     }
 
     /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
@@ -271,7 +299,14 @@ class Runner(private val config: Config, private val store: Store) {
         // Each selection is capped on its own; a problem two selections share is solved once.
         // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
         val budgetMs = arms.maxOf { it.timeoutMs }
-        val problems = interleave(spec.problems.withIndex().map { (index, problemSelection) ->
+        val problems = spec.problemList.ifEmpty { selectProblems(job, spec, worktree, opts, budgetMs, dir, log) }
+        require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
+        planCases(job, spec, arms, shas, primary, problems)
+    }
+
+    /** The problems [spec]'s selections pick, each selection asked of the bench at [worktree] and filtered and capped. */
+    private fun selectProblems(job: Job, spec: ExperimentSpec, worktree: Path, opts: String, budgetMs: Long, dir: Path, log: File): List<Problem> =
+        interleave(spec.problems.withIndex().map { (index, problemSelection) ->
             val selection = dir.resolve("selection-$index.jsonl")
             val mode = Experiments.referenceFilter(spec, problemSelection)
             // A filtered, capped selection asks the bench for the problems without its caps and caps what the filter
@@ -293,7 +328,8 @@ class Runner(private val config: Config, private val store: Store) {
             Experiments.defaultCapped(problemSelection, selected)?.let { log(job.id, "selection $index: $it") }
             planned
         }).distinctBy { it.suite to it.problem }
-        require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
+
+    private fun planCases(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, problems: List<Problem>) {
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
         val parallel = spec.parallel ?: config.maxParallel
         val hours = Experiments.estimateHours(cases, arms, parallel, config.cores)
@@ -557,6 +593,8 @@ class Runner(private val config: Config, private val store: Store) {
         const val IDLE_POLL_MS = 2000L
         const val CANCEL_POLL_MS = 1000L
         const val MS_PER_SEC = 1000L
+        /** How far back a run looks for the run before it of the same experiment. */
+        const val PREVIOUS_RUNS = 50
         const val KILL_WAIT_SEC = 10L
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001
