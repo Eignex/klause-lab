@@ -133,9 +133,11 @@ reference-filtered: it was drawn from the reference and is meant to stay put. Th
 `deploy/make-sets.py` draws the sets from `select features=true` output and the reference results.
 
 `deploy/specs/` holds the experiments the lab runs: `status-sweep.json` (schedule, every 120 s, the default engine
-on `set=sweep` at 10 s, kept fast), and the daily 60 s runs over the broader selection, one per engine:
-`klause-reference.json` (the default sequential portfolio), `klause-reference-ls.json` (local search only),
-`klause-reference-bt.json` (backtracking only) and `klause-reference-parallel.json` (the portfolio on 4 cores), and `reference.json`, the one-off reference run. Change a
+on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection, one per engine:
+`klause-reference.json` (the default sequential portfolio, daily), and every 3 days, staggered a day apart so one
+runs per day: `klause-reference-ls.json` (local search only), `klause-reference-bt.json` (backtracking only) and
+`klause-reference-parallel.json` (the portfolio on 4 cores). A schedule's phase is its last check: the runner checks
+it again one interval later, and `reference.json`, the one-off reference run. Change a
 schedule by editing its file and running `lab reschedule`.
 
 ## Crash safety
