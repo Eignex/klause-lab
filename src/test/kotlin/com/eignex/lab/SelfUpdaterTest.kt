@@ -64,4 +64,36 @@ class SelfUpdaterTest {
 
         assertEquals(1, restarts)
     }
+
+    @Test
+    fun `a requested check ignores the interval and an update stays due until applied`() {
+        var upstream = "aaa"
+        var fetches = 0
+        val exec = { _: File, cmd: List<String>, _: File? ->
+            if ("fetch" in cmd) fetches++
+            0 to when (cmd.last()) {
+                "HEAD" -> "aaa"
+                "@{u}" -> upstream
+                else -> ""
+            }
+        }
+        val request = File.createTempFile("update", ".requested").apply { delete() }
+        var now = 0L
+        val updater = SelfUpdater(
+            Files.createTempDirectory("src"), 300_000, File.createTempFile("update", ".log"), { now }, exec, { restarts++ },
+            requestFile = request,
+        )
+        val before = updater.due()
+        upstream = "bbb"
+        now = 1_000L
+        val withinInterval = updater.due()
+        request.writeText("now")
+
+        val requested = updater.due()
+        val stillDue = updater.due()
+        updater.maybeUpdate()
+
+        assertEquals(listOf(false, false, true, true, 2, false), listOf(before, withinInterval, requested, stillDue, fetches, request.exists()))
+        assertEquals(1, restarts)
+    }
 }

@@ -12,7 +12,9 @@ LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
 [[ -L "$LAB_DATA/releases/current" ]] || { echo "no release yet: run deploy/install.sh first"; exit 1; }
 
 git -C "$here" pull --ff-only
-(cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
+# Niced and without a daemon (an already running one would not be niced), so a build run by hand while solves run
+# takes as little from them as it can; `lab update` avoids the overlap altogether.
+(cd "$here" && nice -n 19 ./gradlew --no-daemon installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
 JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 bin="$(release "$here" "$LAB_DATA")"

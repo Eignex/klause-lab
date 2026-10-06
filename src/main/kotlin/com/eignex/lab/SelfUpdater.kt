@@ -5,10 +5,12 @@ import java.nio.file.Path
 import kotlin.system.exitProcess
 
 /**
- * Keeps the lab on the newest klause-lab commit. Between jobs, at most every [intervalMs], it fetches [source], the
- * checkout the services were installed from, and when its upstream is ahead runs `deploy/update.sh` there. That
- * pulls, builds a new release, checks the host and restarts both services onto it, this process included, so a
- * return from [maybeUpdate] after an update started means the update failed and the running release stays.
+ * Keeps the lab on the newest klause-lab commit. At most every [intervalMs], or at once when [requestFile] exists (`lab
+ * update` writes it), it fetches [source], the checkout the services were installed from, and finds whether its
+ * upstream is ahead. An update never overlaps a job: the runner asks [due] between a job's cases and yields the job
+ * when it is, then calls [maybeUpdate] with nothing running. That runs `deploy/update.sh`, which pulls, builds a new
+ * release, checks the host and restarts both services onto it, this process included, so a return from
+ * [maybeUpdate] after an update started means the update failed and the running release stays.
  */
 class SelfUpdater(
     private val source: Path?,
@@ -17,19 +19,37 @@ class SelfUpdater(
     private val clock: () -> Long = System::currentTimeMillis,
     private val exec: (dir: File, cmd: List<String>, log: File?) -> Pair<Int, String> = ::execute,
     private val restart: () -> Unit = { exitProcess(EX_RESTART) },
+    private val requestFile: File? = null,
 ) {
     private var lastCheck: Long? = null
+    private var pending = false
 
-    fun maybeUpdate() {
-        val dir = source?.toFile() ?: return
+    /** Whether an update is waiting: one found earlier, or one a check made now finds. */
+    @Synchronized
+    fun due(): Boolean {
+        if (pending) return true
+        val dir = source?.toFile() ?: return false
+        val requested = requestFile?.exists() == true
         val now = clock()
-        if (lastCheck?.let { now - it < intervalMs } == true) return
+        if (!requested && lastCheck?.let { now - it < intervalMs } == true) return false
         lastCheck = now
-        if (exec(dir, listOf("git", "fetch", "-q", "origin"), null).first != 0) return println("self-update: fetch failed")
+        requestFile?.delete()
+        if (exec(dir, listOf("git", "fetch", "-q", "origin"), null).first != 0) {
+            println("self-update: fetch failed")
+            return false
+        }
         val head = exec(dir, listOf("git", "rev-parse", "HEAD"), null).second.trim()
         val upstream = exec(dir, listOf("git", "rev-parse", "@{u}"), null).second.trim()
-        if (head.isEmpty() || upstream.isEmpty() || head == upstream) return
-        println("self-update: ${head.take(9)} -> ${upstream.take(9)}")
+        pending = head.isNotEmpty() && upstream.isNotEmpty() && head != upstream
+        if (pending) println("self-update: ${head.take(9)} -> ${upstream.take(9)} waiting for the runner to be free")
+        return pending
+    }
+
+    /** Update now if one is [due]; call only with no job running. */
+    @Synchronized
+    fun maybeUpdate() {
+        if (!due()) return
+        val dir = source?.toFile() ?: return
         val exit = exec(dir, listOf("bash", "deploy/update.sh"), log).first
         if (exit == 0) {
             // update.sh restarts the services, but this process can outlive the signal and would keep running the
@@ -38,6 +58,8 @@ class SelfUpdater(
             restart()
             return
         }
+        // Not retried at once: a failed update would otherwise make every job yield to it in turn.
+        pending = false
         println("self-update failed (exit $exit), staying on the running release; see ${log.name}")
     }
 }

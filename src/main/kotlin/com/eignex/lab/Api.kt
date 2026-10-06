@@ -217,6 +217,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             }
         }
         // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
+        // The runner fetches within seconds and, when the lab's upstream moved, updates between the running job's cases.
+        post("/update") {
+            config.updateRequest.toFile().writeText("${System.currentTimeMillis()}\n")
+            call.respond(HttpStatusCode.Accepted, "update requested")
+        }
         post("/jobs/{id}/retry") {
             val retried = store.retry(call.parameters["id"]!!.toLong())
             call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled job can be retried")

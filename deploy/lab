@@ -16,6 +16,7 @@
 #   lab schedules | lab unschedule <id>
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
+#   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
@@ -73,6 +74,7 @@ compare) echo "$url/compare?jobs=$(IFS=,; echo "$*")" ;;
 schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
       "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv' ;;
 check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
+update) curl -sS -X POST "$url/update"; echo ;;
 retry) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/retry"; echo; done ;;
 rm) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/delete"; echo; done ;;
 unschedule) curl -sS -X POST "$url/schedules/$1/delete"; echo ;;

@@ -60,6 +60,8 @@ data class Config(
     val sharedDir: Path get() = dataDir.resolve("shared")
     val database: Path get() = dataDir.resolve("lab.db")
     val mirror: Path get() = dataDir.resolve("repo.git")
+    /** Written by `lab update`: the runner checks for a lab update at once instead of at its interval. */
+    val updateRequest: Path get() = dataDir.resolve("update-requested")
     fun jobDir(id: Long): Path = dataDir.resolve("jobs").resolve(id.toString())
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
 }

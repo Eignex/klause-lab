@@ -37,15 +37,19 @@ class Runner(private val config: Config, private val store: Store) {
     /** Held over every git operation on the shared mirror, which the schedule thread and job setup both touch. */
     private val mirrorLock = Any()
 
+    private val updater by lazy {
+        SelfUpdater(
+            config.sourceDir.takeIf { config.updateCheckSec > 0 },
+            config.updateCheckSec * 1000,
+            config.dataDir.resolve("logs").resolve("update.log").toFile(),
+            requestFile = config.updateRequest.toFile(),
+        )
+    }
+
     fun loop() {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
-        val updater = SelfUpdater(
-            config.sourceDir.takeIf { config.updateCheckSec > 0 },
-            config.updateCheckSec * 1000,
-            config.dataDir.resolve("logs").resolve("update.log").toFile(),
-        )
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
         // priorities then decide when it runs.
         thread(isDaemon = true, name = "schedules") {
@@ -55,7 +59,8 @@ class Runner(private val config: Config, private val store: Store) {
             }
         }
         while (true) {
-            // Only between jobs: an update restarts the runner, which would cut a command off mid-run.
+            // Only between jobs: an update builds on this machine and restarts the runner, so a job yields to it
+            // between its cases (see dispatch) and the update runs here with nothing running.
             updater.maybeUpdate()
             if (!disk.allowsWork()) {
                 Thread.sleep(IDLE_POLL_MS)
@@ -136,7 +141,7 @@ class Runner(private val config: Config, private val store: Store) {
                 if (!cancelled && store.cancelRequested(job.id)) cancelled = true
                 if (cancelled) {
                     if (active.isEmpty()) return Dispatched.CANCELLED
-                } else if (yielding || (pending.isNotEmpty() && store.shouldYield(job.id))) {
+                } else if (yielding || (pending.isNotEmpty() && (store.shouldYield(job.id) || updateDue(job.id)))) {
                     yielding = true
                     if (active.isEmpty()) return Dispatched.YIELDED
                 } else {
@@ -163,6 +168,9 @@ class Runner(private val config: Config, private val store: Store) {
             pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
         }
     }
+
+    /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
+    private fun updateDue(jobId: Long): Boolean = updater.due().also { if (it) log(jobId, "yielding for a lab update") }
 
     /** Cores the running cases at [indices] of [job] hold. */
     private fun held(indices: Collection<Int>, job: Job): Int = job.commands.filter { it.index in indices }.sumOf { it.cores }

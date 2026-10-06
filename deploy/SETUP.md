@@ -239,10 +239,14 @@ needs no sudo. Each build is copied into its own `$LAB_DATA/releases/<sha>-<time
 `releases/current`, and the three newest releases are kept. A rebuild never rewrites jars a running service still
 loads classes from, which would break it until it restarts. The cases running when the services restart are rerun. Rerun `install.sh` instead when `lab.env` or the service setup itself changed.
 
-The runner does this on its own: between jobs, at most every `LAB_UPDATE_CHECK_SEC` (default 300), it fetches the
-checkout `install.sh` ran from and, when its branch's upstream is ahead, runs `update.sh`. A failed build or host
-check leaves the running release in place, with the output in `$LAB_DATA/logs/update.log`. `LAB_UPDATE_CHECK_SEC=0`
-turns it off.
+The runner does this on its own, and never alongside a solve: at most every `LAB_UPDATE_CHECK_SEC` (default 300) it
+fetches the checkout `install.sh` ran from, and when its branch's upstream is ahead, the running job yields between
+its cases, as it does to a higher-priority job; `update.sh` then runs with nothing running and the job resumes on the
+new release. A build competing with the solves for the CPU pushes problems near their budget over it, which reads as
+a regression. `lab update` asks for the check at once. Deploy by pushing and running `lab update` rather than running
+`update.sh` by hand, which builds (niced) and restarts while cases run. A failed build or host check leaves the
+running release in place, with the output in `$LAB_DATA/logs/update.log`, and is tried again at the next check.
+`LAB_UPDATE_CHECK_SEC=0` turns it off.
 
 ## Client
 
