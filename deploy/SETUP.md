@@ -154,6 +154,18 @@ it again one interval later, so staggered schedules stay a day apart; `lab resch
     start time keeps a reused pid from being taken for the case.
 - A case's `<n>.exit` file is written atomically once it ends: an exit code, or `timeout`.
 - A service shutdown, such as a reboot, kills the running cases but does not record them, so they rerun after boot.
+- Setup steps that can fail for a passing reason are retried with exponential backoff before a job fails:
+  - fetching the mirror and adding a worktree: up to `LAB_RETRY_ATTEMPTS` tries (default 6), waiting
+    `LAB_RETRY_BASE_SEC` (15) after the first failure and doubling to at most `LAB_RETRY_MAX_SEC` (300), so a network
+    outage of about 8 minutes is ridden out;
+  - building and selecting problems, which can also fail on a download but more often for good: up to
+    `LAB_BUILD_RETRY_ATTEMPTS` tries (default 3) on the same waits.
+
+  Each retry is logged to the job. A cancel ends the wait, and the job is then cancelled, not failed. A schedule
+  whose fetch still fails stays due, so the next poll tries again rather than a whole interval later. A case that
+  runs and fails is a result and is not retried.
+- `lab retry <id>`, or the job page's retry button, queues a failed or cancelled job again: its finished cases are
+  kept, its unfinished ones rerun, and it is set up afresh, planned only if it never was.
 - The service manager restarts either process after a crash and starts both at boot without a login: launchd
   daemons on macOS, systemd user units with lingering on Linux. On macOS the runner also runs under
   `caffeinate -i`, which keeps the machine awake while it lives.
@@ -272,6 +284,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | --- | --- | --- |
 | `GET` | `/jobs`, `/jobs/{id}` | job and case-command states; `/jobs` takes `?limit`, `?before=<id>` and `?name` |
 | `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its cases' process trees killed |
+| `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
 | `POST` | `/experiments` | an experiment spec (above) → `{"id"}`; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts |

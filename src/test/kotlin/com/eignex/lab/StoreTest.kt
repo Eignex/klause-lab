@@ -101,6 +101,33 @@ class StoreTest {
     }
 
     @Test
+    fun `a cancelled job retried runs its unfinished cases again and keeps its finished ones`() {
+        val store = store()
+        val id = store.create("a", "main", List(3) { "true" to 10L })
+        store.next()
+        store.commandStarted(id, 0)
+        store.commandFinished(id, 0, 0)
+        store.cancelRemaining(id)
+        store.finish(id, Status.CANCELLED)
+
+        val retried = store.retry(id)
+        val job = checkNotNull(store.job(id))
+
+        assertEquals(listOf(true, Status.QUEUED, null), listOf(retried, job.status, job.finishedAt))
+        assertEquals(listOf(Status.DONE, Status.QUEUED, Status.QUEUED), job.commands.map { it.status })
+        assertEquals(listOf(false, id), listOf(store.retry(id), store.next()?.id))
+    }
+
+    @Test
+    fun `the queue order is the order jobs are taken in`() {
+        val store = store()
+        val low = store.create("low", "main", listOf("true" to 10L))
+        val high = store.create("high", "main", listOf("true" to 10L), priority = 5)
+
+        assertEquals(listOf(high, low), store.queueOrder())
+    }
+
+    @Test
     fun `the highest priority queued job is taken first`() {
         val store = store()
         store.create("low", "main", listOf("true" to 10L))

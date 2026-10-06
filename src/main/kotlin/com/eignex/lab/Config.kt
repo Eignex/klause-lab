@@ -34,6 +34,19 @@ data class Config(
     val maxExperimentHours: Long = env("LAB_MAX_EXPERIMENT_HOURS", "24").toLong(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
     val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
+    /** Retries of a step that talks to the network (fetching the mirror, adding a worktree, a schedule's check): 15 s,
+     *  then doubling to at most 5 min, six tries in all, so a network outage of several minutes is ridden out. */
+    val retry: Backoff = Backoff(
+        env("LAB_RETRY_ATTEMPTS", "6").toInt(),
+        env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
+        env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
+    ),
+    /** Retries of a build or a plan, which can also fail on a download but more often for good: fewer tries. */
+    val buildRetry: Backoff = Backoff(
+        env("LAB_BUILD_RETRY_ATTEMPTS", "3").toInt(),
+        env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
+        env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
+    ),
     /** Worktree-relative directories every job shares, separated by `:`. */
     val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "klause-bench/build/bench-cache")
         .split(':').map { it.trim() }.filter { it.isNotEmpty() },
@@ -50,5 +63,7 @@ data class Config(
     fun jobDir(id: Long): Path = dataDir.resolve("jobs").resolve(id.toString())
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
 }
+
+private const val MS_PER_SEC = 1000L
 
 private fun env(name: String, default: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default

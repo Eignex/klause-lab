@@ -68,6 +68,8 @@ class Runner(private val config: Config, private val store: Store) {
             }
             runCatching { work(job) }.onFailure { e ->
                 if (stopping) return
+                // A cancel that lands while a setup step waits to retry ends the wait; it is a cancel, not a failure.
+                if (store.cancelRequested(job.id)) return@onFailure cancel(job.id)
                 log(job.id, "job failed: ${e.message}")
                 store.cancelRemaining(job.id)
                 store.finish(job.id, Status.FAILED, e.message ?: e.toString())
@@ -179,14 +181,25 @@ class Runner(private val config: Config, private val store: Store) {
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
             val advertised = advertised(schedule.ref)
             if (advertised != null && advertised == schedule.lastSha) continue
-            val sha = runCatching {
-                synchronized(mirrorLock) {
-                    if (!config.mirror.exists()) {
-                        capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+            val fetched = runCatching {
+                withRetry(null, "schedule ${schedule.name}: fetching") {
+                    synchronized(mirrorLock) {
+                        if (!config.mirror.exists()) {
+                            capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+                        }
+                        capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
                     }
-                    capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
-                    capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}")
                 }
+            }
+            if (fetched.isFailure) {
+                // Left due rather than checked, so the next poll tries again instead of a whole interval later.
+                println("schedule ${schedule.name}: fetch failed, retrying on the next poll: ${fetched.exceptionOrNull()?.message}")
+                store.checkNow(schedule.id)
+                continue
+            }
+            // A ref origin no longer has is not retried: it waits for the next interval like an unmoved one.
+            val sha = runCatching {
+                synchronized(mirrorLock) { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}") }
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha) continue
             val name = "${schedule.name}@${sha.take(9)}"
@@ -217,21 +230,27 @@ class Runner(private val config: Config, private val store: Store) {
         log.writeText("")
         val planned = store.arms(job.id)
         val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
+        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(log) } }
         val shas = synchronized(mirrorLock) {
-            fetchMirror(log)
             planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
         }
         val primary = shas.getValue(arms.first().ref)
         removeWorktree(job.id)
         for (sha in shas.values.distinct()) {
             val path = experimentWorktree(job.id, sha, primary)
-            synchronized(mirrorLock) {
-                path.parent.createDirectories()
-                sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
+            withRetry(job.id, "adding the worktree for ${sha.take(9)}") {
+                synchronized(mirrorLock) {
+                    // What a failed try left would make the next one refuse the path.
+                    removeTree(path)
+                    path.parent.createDirectories()
+                    sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
+                }
             }
             linkShared(path)
-            sh(log, path.toFile(),
-                "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+            withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
+                sh(log, path.toFile(),
+                    "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+            }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, log)
         dir.resolve("sha").writeAtomically(primary)
@@ -251,9 +270,12 @@ class Runner(private val config: Config, private val store: Store) {
             // keeps, so the problems the reference never decided are replaced rather than leaving the selection short.
             val refill = Experiments.refills(mode, problemSelection)
             val asked = if (refill) Experiments.uncapped(problemSelection) else problemSelection
-            sh(log, worktree.resolve("klause-bench").toFile(),
-                "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
-                    "select ${Experiments.selectArgs(asked)} > ${quote(selection.toString())}")
+            // Selecting can fetch a corpus the cache does not hold yet.
+            withRetry(job.id, "selecting problems for selection $index", config.buildRetry) {
+                sh(log, worktree.resolve("klause-bench").toFile(),
+                    "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
+                        "select ${Experiments.selectArgs(asked)} > ${quote(selection.toString())}")
+            }
             val selected = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
             val references = store.references(selected.map { it.collection to it.problem })
             val kept = selected.filter { mode.keeps(references[it.collection to it.problem], budgetMs) }
@@ -464,6 +486,27 @@ class Runner(private val config: Config, private val store: Store) {
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) deleteTree(path)
     }
 
+    /**
+     * Run [step] by [backoff], logging each retry to job [jobId] (or the console without one). The wait stops for a
+     * shutdown, as a running step does, and gives up early when the job's cancel is requested.
+     */
+    private fun <T> withRetry(jobId: Long?, what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
+        backoff,
+        onRetry = { attempt, waitMs, e ->
+            val message = "$what failed (try $attempt of ${backoff.attempts}), retrying in ${waitMs / MS_PER_SEC} s: ${e.message}"
+            if (jobId != null) log(jobId, message) else println(message)
+        },
+        sleep = { waitMs ->
+            val until = now() + waitMs
+            while (now() < until) {
+                while (stopping) Thread.sleep(CANCEL_POLL_MS)
+                check(jobId == null || !store.cancelRequested(jobId)) { "cancelled while waiting to retry $what" }
+                Thread.sleep((until - now()).coerceIn(1, CANCEL_POLL_MS))
+            }
+        },
+        step = step,
+    )
+
     private fun sh(log: File, dir: File, cmd: String) {
         log.appendText("$ $cmd\n")
         val builder = ProcessBuilder(inSession("bash", "-c", cmd)).directory(dir)
@@ -505,6 +548,7 @@ class Runner(private val config: Config, private val store: Store) {
     private companion object {
         const val IDLE_POLL_MS = 2000L
         const val CANCEL_POLL_MS = 1000L
+        const val MS_PER_SEC = 1000L
         const val KILL_WAIT_SEC = 10L
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001

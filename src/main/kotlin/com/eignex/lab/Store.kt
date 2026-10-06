@@ -379,9 +379,7 @@ class Store(file: Path) {
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
         val id = running ?: connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
-                "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
-                "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id LIMIT 1",
+            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $QUEUE_ORDER LIMIT 1",
         ).use {
             it.setString(1, Status.QUEUED.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
@@ -688,6 +686,36 @@ class Store(file: Path) {
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
+    /** The queued, unpaused jobs in the order [next] takes them. */
+    @Synchronized
+    fun queueOrder(): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $QUEUE_ORDER",
+    ).use {
+        it.setString(1, Status.QUEUED.name)
+        it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
+    }
+
+    /**
+     * Put a failed or cancelled job back in the queue: its error is cleared, its unfinished cases are queued again
+     * and its finished ones kept. Its worktree is gone, so the runner sets it up afresh, planning it only if it never
+     * was. False when there is no such job or it did not fail or get cancelled.
+     */
+    @Synchronized
+    fun retry(jobId: Long): Boolean = transaction {
+        val reopened = update(
+            "UPDATE jobs SET status = ?, error = NULL, finished_at = NULL, cancel_requested = 0, paused = 0, running_since = NULL " +
+                "WHERE id = ? AND status IN (?, ?)",
+            Status.QUEUED.name, jobId, Status.FAILED.name, Status.CANCELLED.name,
+        ) == 1
+        if (reopened) {
+            update(
+                "UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND status IN (?, ?)",
+                Status.QUEUED.name, jobId, Status.CANCELLED.name, Status.RUNNING.name,
+            )
+        }
+        reopened
+    }
+
     /** Put a running job that yielded back in the queue; its finished commands and its worktree stay. */
     @Synchronized
     fun requeue(jobId: Long): Int {
@@ -779,3 +807,7 @@ fun now(): Long = System.currentTimeMillis()
  *  any `@`, so every run a schedule queues shares its schedule's name. */
 private const val SERIES_J = "CASE WHEN instr(jobs.name, '@') > 0 THEN substr(jobs.name, 1, instr(jobs.name, '@') - 1) ELSE jobs.name END"
 private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.name, 1, instr(r.name, '@') - 1) ELSE r.name END"
+
+/** How [Store.next] orders queued jobs: by priority, then the series that last finished a run longest ago, then age. */
+private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+    "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"

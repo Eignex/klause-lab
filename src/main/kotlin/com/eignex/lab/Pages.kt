@@ -18,13 +18,15 @@ internal fun indexPage(
     limit: Int,
     before: Long?,
     name: String?,
+    /** Queued jobs in the order the runner takes them ([Store.queueOrder]). */
+    queueOrder: List<Long> = emptyList(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
     append("<header><h1>Queue</h1>")
     append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active)}</p></header>")
     if (front) {
-        append("<section><h2>Active</h2><div id=\"active\" data-live>${activeTable(config, active)}</div></section>")
+        append("<section><h2>Active</h2><div id=\"active\" data-live>${activeTable(config, active, queueOrder)}</div></section>")
         if (schedules.isNotEmpty()) {
             append("<section><h2>Schedules</h2><div id=\"schedules\" data-live>${schedulesTable(schedules)}</div></section>")
         }
@@ -79,6 +81,10 @@ internal fun jobPage(
     append(" · <a href=\"/jobs/${job.id}?json\">json</a></dd>")
     append("</dl>")
     job.error?.let { append("<pre class=\"error\">${esc(it)}</pre>") }
+    if (job.status == Status.FAILED || job.status == Status.CANCELLED) {
+        append("<div class=\"actions\"><button onclick=\"act('/jobs/${job.id}/retry', null, 'Queue job ${job.id} again?')\">retry</button>")
+        append("<span class=\"muted\">queues its unfinished cases again; finished ones are kept</span></div>")
+    }
     if (active) {
         val id = job.id
         append("<div class=\"actions\">")
@@ -806,13 +812,10 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
         if (accel.isEmpty()) "" else ", ${esc(accel)}"
 }
 
-private fun activeTable(config: Config, active: List<Job>): String {
+private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
     // The order the runner takes queued jobs in, as Store.next picks them.
-    val positions = active
-        .filter { it.status == Status.QUEUED && !it.paused && !it.cancelRequested }
-        .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })
-        .withIndex().associate { (index, job) -> job.id to index + 1 }
+    val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
     return jobTable(config, ordered, positions, filterable = false)
 }

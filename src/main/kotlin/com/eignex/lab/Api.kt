@@ -73,7 +73,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name)
-            val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name)
+            val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name, store.queueOrder())
             call.respondText(page, ContentType.Text.Html)
         }
         get("/health") {
@@ -217,6 +217,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             }
         }
         // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
+        post("/jobs/{id}/retry") {
+            val retried = store.retry(call.parameters["id"]!!.toLong())
+            call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled job can be retried")
+        }
         post("/jobs/{id}/delete") {
             val id = call.parameters["id"]!!.toLong()
             if (!store.deleteJob(id)) {
