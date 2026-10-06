@@ -53,7 +53,7 @@ object Trend {
             .sortedBy { it.id }
         val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX)
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
-            .associateBy { it.name.substringAfter('@') }
+            .associateBy { it.name }
         var previous: Pair<String, List<CaseResult>>? = null
         return jobs.mapNotNull { job ->
             val arms = store.arms(job.id)
@@ -64,7 +64,7 @@ object Trend {
             val spec = Experiments.fingerprint(checkNotNull(job.experiment))
             val flips = previous?.takeIf { it.first == spec && job.status == Status.DONE }?.let { Confirm.flips(it.second, own) }
             if (job.status == Status.DONE) previous = spec to own
-            val confirmation = confirmations[job.name.substringAfter('@')]
+            val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
             val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(store.cases(it.id)) }
             trend.copy(
                 lost = flips?.lost?.size,

@@ -187,7 +187,7 @@ class Runner(private val config: Config, private val store: Store) {
         if (before == after) return
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
         if (flips.lost.isEmpty() && flips.gained.isEmpty()) return
-        val confirmation = Confirm.spec(series, spec, before, after, flips)
+        val confirmation = Confirm.spec(series, spec, before, after, flips, job.id)
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
         log(job.id, "${flips.lost.size} lost, ${flips.gained.size} gained against job ${previous.id}: queued confirmation job $id")
     }

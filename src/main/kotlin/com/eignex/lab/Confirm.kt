@@ -47,11 +47,14 @@ object Confirm {
         )
     }
 
-    /** The confirmation of [flips] in a run of [spec] at [after], against the earlier run at [before]. */
-    fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips): ExperimentSpec {
+    /** The name of the confirmation of run [job] of [series] at [after]: the run's id keeps two runs of one commit apart. */
+    fun name(series: String, after: String, job: Long) = "$series$SUFFIX@${after.take(SHA_LENGTH)}-$job"
+
+    /** The confirmation of [flips] in run [job] of [spec] at [after], against the earlier run at [before]. */
+    fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long): ExperimentSpec {
         val config = spec.configs.firstOrNull().orEmpty() - "ref" - "label"
         return ExperimentSpec(
-            name = "$series$SUFFIX@${after.take(SHA_LENGTH)}",
+            name = name(series, after, job),
             problems = emptyList(),
             problemList = (flips.lost + flips.gained).take(MAX_PROBLEMS),
             base = spec.base - "ref",

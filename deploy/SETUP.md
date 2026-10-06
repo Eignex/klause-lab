@@ -133,7 +133,7 @@ runs against each other problem by problem, not just by its totals:
 
 - Each run shows, against the run before it of the same experiment, the problems it lost and gained, with a two-sided
   sign test on them. Fifteen lost and none gained is p < 0.001 even when the solved shares' bands overlap.
-- A finished run that flipped problems queues a confirmation job, `<schedule>~confirm@<sha>`: just those problems (at
+- A finished run that flipped problems queues a confirmation job, `<schedule>~confirm@<sha>-<run>`: just those problems (at
   most 40), on both commits, alternating case by case so both see the same machine, three times each. A flip counts
   only when the repeats agree with it; the trend shows `confirmed −lost +gained`, linking the job, whose page compares
   the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.

@@ -46,10 +46,10 @@ class ConfirmTest {
         val sweep = ExperimentSpec("status-sweep@bbb", listOf(mapOf("set" to "sweep")), base = mapOf("timeout" to "10000", "ref" to "bbb"), priority = -1)
         val flips = Flips(lost = listOf(Problem("s", "a")), gained = listOf(Problem("s", "b")))
 
-        val spec = Confirm.spec("status-sweep", sweep, "aaa111111111", "bbb222222222", flips)
+        val spec = Confirm.spec("status-sweep", sweep, "aaa111111111", "bbb222222222", flips, job = 7)
         val arms = Experiments.arms(spec)
 
-        assertEquals("status-sweep~confirm@bbb222222", spec.name)
+        assertEquals("status-sweep~confirm@bbb222222-7", spec.name)
         assertEquals(listOf("before" to "aaa111111111", "after" to "bbb222222222"), arms.map { it.label to it.ref })
         assertEquals(listOf(3, 2, -1), listOf(spec.repeats, spec.problemList.size, spec.priority))
         assertEquals(10_000L, arms.first().timeoutMs)
