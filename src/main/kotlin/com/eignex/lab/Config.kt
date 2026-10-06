@@ -19,8 +19,12 @@ data class Config(
     val gradleWorkers: Int = env("LAB_GRADLE_WORKERS", "2").toInt(),
     val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
     /** The most cases one job may run at once, whatever it asks for: each holds its own solve heap, so memory bounds
-     *  this, where [cores] bounds the threads. An experiment that sets no `parallel` runs this many. */
+     *  this, where [cores] bounds the threads. */
     val maxParallel: Int = env("LAB_MAX_PARALLEL", "6").toInt(),
+    /** Cases at once for an experiment that sets no `parallel`: the lab Mac's performance cores. A solve that lands on
+     *  an efficiency core runs at a fraction of the speed, and which ones do changes from run to run, so running
+     *  more than there are performance cores trades timing noise for throughput. */
+    val defaultParallel: Int = env("LAB_DEFAULT_PARALLEL", "4").toInt().coerceIn(1, maxParallel),
     /** Cores the running cases may hold together, a case holding its arm's `processors`; two are left for the JVMs
      *  around the solves and the machine itself. */
     val cores: Int = env("LAB_CORES", (Runtime.getRuntime().availableProcessors() - 2).coerceAtLeast(1).toString()).toInt(),

@@ -91,7 +91,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             Experiments.validate(spec, config.maxParallel, config.cores)
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
-            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.maxParallel, spec.priority, spec)
+            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }

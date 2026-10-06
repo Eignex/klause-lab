@@ -43,7 +43,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
-- `parallel` (cases at once; unset, the lab's `LAB_MAX_PARALLEL`), `priority` and `confirm` as below.
+- `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
@@ -135,8 +135,8 @@ runs against each other problem by problem, not just by its totals:
   most 40), on both commits, alternating case by case so both see the same machine, three times each. A flip counts
   only when the repeats agree with it; the trend shows `confirmed −lost +gained`, linking the job, whose page compares
   the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.
-- The status sweep runs 4 cases at a time rather than 6, so its solvers compete less with each other and the docker
-  VM, and the lab never updates itself while a case runs (see Updating).
+- Experiments run 4 cases at a time by default, one per performance core (see What a case runs in), and the lab never updates
+  itself while a case runs (see Updating).
 
 Schedules are for klause. The reference solvers do not change, so a reference run is a one-off experiment; rerunning
 one with `"reference": "unsettled"` on its selections solves only the problems added since, plus those a smaller budget
@@ -202,8 +202,10 @@ running cases together hold at most `LAB_CORES` (default: the machine's cores le
 solves and the machine). Each solve sees exactly its cores (`-XX:ActiveProcessorCount`), so a portfolio sizes its
 threads to them. A case too big for the cores left waits for room rather than letting later ones pass it, and an arm
 asking for more processors than `LAB_CORES` is refused at submit. On top of that, at most `parallel` cases run at
-once: the spec's, or `LAB_MAX_PARALLEL` (default 6) when it sets none, and never more than that. Memory is what
-bounds this one: each solve holds its own heap (`-Xmx3g` by default), so keep `LAB_MAX_PARALLEL` times that within
+once: the spec's, or `LAB_DEFAULT_PARALLEL` (default 4) when it sets none, and never more than `LAB_MAX_PARALLEL`
+(default 6). The default is the lab Mac's (an M4) performance cores: a solve on one of its six efficiency cores runs
+at a fraction of the speed, and which solves land there changes from run to run, which is timing noise. The cap is
+bounded by memory: each solve holds its own heap (`-Xmx3g` by default), so keep `LAB_MAX_PARALLEL` times that within
 the machine's memory. `deploy/lab parallel <id> <n>` changes an experiment's limit while it runs: raising it starts
 more cases at once, lowering it starts no more until fewer than `n` run, and never stops a running one. Setup always
 runs alone.

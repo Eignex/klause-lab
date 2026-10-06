@@ -188,7 +188,7 @@ class Runner(private val config: Config, private val store: Store) {
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
         if (flips.lost.isEmpty() && flips.gained.isEmpty()) return
         val confirmation = Confirm.spec(series, spec, before, after, flips)
-        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.maxParallel, confirmation.priority, confirmation)
+        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
         log(job.id, "${flips.lost.size} lost, ${flips.gained.size} gained against job ${previous.id}: queued confirmation job $id")
     }
 
@@ -240,7 +240,7 @@ class Runner(private val config: Config, private val store: Store) {
             if (sha == schedule.lastSha) continue
             val name = "${schedule.name}@${sha.take(9)}"
             val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha))
-            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.maxParallel, spec.priority, spec)
+            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
@@ -331,7 +331,7 @@ class Runner(private val config: Config, private val store: Store) {
 
     private fun planCases(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, problems: List<Problem>) {
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
-        val parallel = spec.parallel ?: config.maxParallel
+        val parallel = spec.parallel ?: config.defaultParallel
         val hours = Experiments.estimateHours(cases, arms, parallel, config.cores)
         require(spec.confirm || hours <= config.maxExperimentHours) {
             "${cases.size} cases could take %.1f h at ×$parallel, over the ${config.maxExperimentHours} h limit; ".format(hours) +
