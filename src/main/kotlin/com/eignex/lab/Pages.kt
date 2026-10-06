@@ -226,16 +226,30 @@ private fun referenceSection(labels: List<String>, cases: List<CaseResult>, refe
         append("a reference verdict · <a href=\"/references\">reference results</a></small></h2>")
         append("<div class=\"scroll\"><table><tr><th>arm</th><th class=\"num\">covered</th><th class=\"num\">both solved</th>")
         append("<th class=\"num\">only the arm</th><th class=\"num\">only the reference</th><th class=\"num\">proven optima reached</th>")
-        append("<th class=\"num\">beats its best</th><th class=\"num\">mean gap</th></tr>")
+        append("<th class=\"num\">beats its best</th><th class=\"num\">worse incumbent</th><th class=\"num\">mean gap</th></tr>")
         for (r in comparison.summaries) {
             append("<tr><td><b>${esc(r.arm)}</b></td><td class=\"num\">${r.covered}</td><td class=\"num\">${r.bothSolved}</td>")
             append("<td class=\"num\">${if (r.armOnly > 0) "<span class=\"DONE\">${r.armOnly}</span>" else "0"}</td>")
             append("<td class=\"num\">${if (r.referenceOnly > 0) "<span class=\"FAILED\">${r.referenceOnly}</span>" else "0"}</td>")
             append("<td class=\"num\">${r.optimaMatched}/${r.provenOptima}</td><td class=\"num\">${r.better}</td>")
+            append("<td class=\"num\">${if (r.worse > 0) "<span class=\"PARTIAL\">${r.worse}</span>" else "0"}</td>")
             append("<td class=\"num\">${r.meanGap?.let { "%.1f%%".format(it * 100) } ?: "–"}</td></tr>")
         }
         append("</table></div><p class=\"muted\"><small>The reference ran under its own budget, so this compares verdicts ")
         append("and objectives, not speed. Mean gap is the relative distance to the reference objective where the arm is worse.</small></p>")
+        if (comparison.shortfalls.isNotEmpty()) {
+            append("<details><summary><b>Worse incumbents</b> <small class=\"muted\">${comparison.shortfalls.size} problems where ")
+            append("an arm's best objective is worse than the reference's, the largest gap first</small></summary>")
+            append("<div class=\"scroll\"><table><tr><th>arm</th><th>problem</th><th class=\"num\">objective</th>")
+            append("<th class=\"num\">reference</th><th class=\"num\">gap</th></tr>")
+            for (f in comparison.shortfalls) {
+                append("<tr><td>${esc(f.arm)}</td><td><a class=\"plain\" href=\"${problemLink(f.problem.collection, f.problem.problem)}\">")
+                append("<code>${esc(name(f.problem))}</code></a></td><td class=\"num\">${number(f.objective)}</td>")
+                append("<td class=\"num\">${number(f.reference)}${if (f.referenceProven) " <small class=\"muted\">proven</small>" else ""}</td>")
+                append("<td class=\"num\">${"%.1f%%".format(f.gap * 100)}</td></tr>")
+            }
+            append("</table></div></details>")
+        }
         if (comparison.disagreements.isNotEmpty()) {
             append("<h2 class=\"FAILED\">Disagreements with the reference <small>${comparison.disagreements.size}</small></h2><ul class=\"error\">")
             for (d in comparison.disagreements) append("<li><code>${esc(name(d.problem))}</code>: ${esc(d.reason)}</li>")
@@ -427,6 +441,7 @@ internal fun trendPage(
     append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
     append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
     append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>")
+    append("<th class=\"num\" title=\"problems solved to a worse objective than the reference\">worse incumbent</th>")
     append("<th class=\"num\" title=\"against the run before: problems lost and gained, the sign test, and what reruns confirmed\">")
     append("vs previous</th>")
     append("<th class=\"num\">PAR-2 s</th></tr>")
@@ -439,6 +454,7 @@ internal fun trendPage(
         append("<td class=\"num\">")
         append(if (run.disagreements > 0) "<a class=\"FAILED\" href=\"/jobs/${run.job}\">${run.disagreements}</a>" else "0")
         append("</td>")
+        append("<td class=\"num\"><a class=\"plain\" href=\"/jobs/${run.job}\">${run.worse}</a></td>")
         append("<td class=\"num\">${flipCell(run)}</td>")
         append("<td class=\"num\">${"%.2f".format(run.par2.value)}</td></tr>")
     }
@@ -607,7 +623,7 @@ private const val TREND_SCRIPT = """<script>
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['solved', pct(r.solved.value) + ' (' + pct(r.solved.low) + '–' + pct(r.solved.high) + ')'],
       ['proven', pct(r.proven)], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
-      ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['problems', r.problems],
+      ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['worse incumbent', r.worse], ['problems', r.problems],
       ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
       ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];

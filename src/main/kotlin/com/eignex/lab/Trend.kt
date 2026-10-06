@@ -29,6 +29,8 @@ data class TrendRun(
     /** Problems where the run contradicts the reference: a proof against its solution, a solution beyond its proven
      *  optimum, a different proven optimum. Each is a soundness bug in one of them. */
     val disagreements: Int = 0,
+    /** Problems the run solved to a worse objective than the reference. */
+    val worse: Int = 0,
     /** Against the run before it of the same experiment: problems lost and gained, and the sign test on them. Null for
      *  a first run. */
     val lost: Int? = null,
@@ -93,6 +95,7 @@ object Trend {
             .mapValues { (_, problems) ->
                 SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average())
             }.toSortedMap()
+        val comparison = References.compare(listOf(label), own, references)
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
@@ -105,7 +108,8 @@ object Trend {
             proven = summary.proven / n,
             unsupported = summary.unsupported,
             errors = summary.errors,
-            disagreements = References.compare(listOf(label), own, references).disagreements.size,
+            disagreements = comparison.disagreements.size,
+            worse = comparison.shortfalls.size,
             par2 = stats.par2,
             suites = suites,
         )

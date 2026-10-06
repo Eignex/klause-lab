@@ -30,6 +30,21 @@ class ReferencesTest {
         assertEquals(listOf("a proves infeasible, cp-sat solved it"), comparison.disagreements.map { it.reason })
     }
 
+    @Test
+    fun `a worse incumbent is listed with its gap, the largest first`() {
+        fun case(problem: String, objective: Int) = CaseResult(0, Status.DONE, Problem("s", problem, collection = "c"), "a", null,
+            Json.parseToJsonElement("""{"kind":"optimize","maximize":false,"feasible":true,"objective":$objective,"timeToBestMs":5,"budgetMs":1000}"""))
+        val proven = Reference("cp-sat", false, 10.0, true, true, 5, 1000)
+
+        val comparison = References.compare(
+            listOf("a"),
+            listOf(case("close", 11), case("far", 20), case("equal", 10)),
+            mapOf(("c" to "close") to proven, ("c" to "far") to proven, ("c" to "equal") to proven),
+        )
+
+        assertEquals(listOf("far" to 1.0, "close" to 0.1), comparison.shortfalls.map { it.problem.problem to it.gap })
+        assertEquals(2, comparison.summaries.single().worse)
+    }
 
     @Test
     fun `a filter keeps the rows of its solver and verdict, and counts them all`() {

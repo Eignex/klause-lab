@@ -88,10 +88,29 @@ data class ReferenceSummary(
     val better: Int,
     /** Mean relative gap to the reference objective where the arm is worse, over problems both found solutions to. */
     val meanGap: Double?,
+    /** Problems where the arm's best objective is worse than the reference's. */
+    val worse: Int = 0,
+)
+
+/** A problem an arm solved to a worse objective than the reference did. */
+@Serializable
+data class Shortfall(
+    val problem: Problem,
+    val arm: String,
+    val objective: Double,
+    val reference: Double,
+    val referenceProven: Boolean,
+    /** Relative distance to the reference objective. */
+    val gap: Double,
 )
 
 @Serializable
-data class ReferenceComparison(val summaries: List<ReferenceSummary>, val disagreements: List<Disagreement>)
+data class ReferenceComparison(
+    val summaries: List<ReferenceSummary>,
+    val disagreements: List<Disagreement>,
+    /** Every worse incumbent, the largest gap first. */
+    val shortfalls: List<Shortfall> = emptyList(),
+)
 
 /** The `backend=` that runs each problem's reference solver, whose cases become reference results. */
 const val REFERENCE_BACKEND = "reference"
@@ -146,6 +165,7 @@ object References {
      */
     fun compare(labels: List<String>, cases: List<CaseResult>, references: Map<Pair<String, String>, Reference>): ReferenceComparison {
         val disagreements = ArrayList<Disagreement>()
+        val shortfalls = ArrayList<Shortfall>()
         val summaries = labels.map { label ->
             val byProblem = cases.filter { it.arm == label }
                 .mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }
@@ -179,7 +199,11 @@ object References {
                 if (best != null && refObjective != null) {
                     val beats = if (maximize) best > refObjective else best < refObjective
                     if (beats && !reference.proven) better++
-                    if (!beats && best != refObjective) gaps += abs(best - refObjective) / maxOf(abs(refObjective), 1.0)
+                    if (!beats && best != refObjective) {
+                        val gap = abs(best - refObjective) / maxOf(abs(refObjective), 1.0)
+                        gaps += gap
+                        shortfalls += Shortfall(problem, label, best, refObjective, reference.proven, gap)
+                    }
                     if (beats && reference.proven) {
                         disagreements += Disagreement(problem, "$label $best beyond ${reference.solver}'s proven optimum $refObjective")
                     }
@@ -196,9 +220,9 @@ object References {
                 }
             }
             ReferenceSummary(label, covered, bothSolved, armOnly, referenceOnly, optimaMatched, provenOptima, better,
-                gaps.takeIf { it.isNotEmpty() }?.average() ?: if (bothSolved > 0) 0.0 else null)
+                gaps.takeIf { it.isNotEmpty() }?.average() ?: if (bothSolved > 0) 0.0 else null, worse = gaps.size)
         }
-        return ReferenceComparison(summaries, disagreements.distinctBy { it.problem to it.reason })
+        return ReferenceComparison(summaries, disagreements.distinctBy { it.problem to it.reason }, shortfalls.sortedByDescending { it.gap })
     }
 
     private fun abs(x: Double) = kotlin.math.abs(x)

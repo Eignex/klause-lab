@@ -86,6 +86,8 @@ proven optima reached, objectives that beat the reference's best, and the mean g
 reference ran under its own budget, so this compares verdicts, not speed. Contradictions are listed as
 disagreements, which makes the reference a soundness check: an arm proving infeasible what the reference solved, or
 beating a proven reference optimum.
+It also lists the worse incumbents: each problem an arm solved to a worse objective than the reference, with its gap,
+the largest first; a schedule's trend counts them per run.
 
 An arm with `"backend": "reference"` runs each problem's reference solver instead of klause: clasp for DIMACS, OPB and
 WCNF, the cp-sat image for XCSP3, z3 for SMT-LIB, SCIP for MPS, cp-sat for MiniZinc. Each such case adds its verdict
