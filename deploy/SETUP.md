@@ -136,9 +136,9 @@ reference-filtered: it was drawn from the reference and is meant to stay put. Th
 on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection, one per engine:
 `klause-reference.json` (the default sequential portfolio, daily), and every 3 days, staggered a day apart so one
 runs per day: `klause-reference-ls.json` (local search only), `klause-reference-bt.json` (backtracking only) and
-`klause-reference-parallel.json` (the portfolio on 4 cores). A schedule's phase is its last check: the runner checks
-it again one interval later, and `reference.json`, the one-off reference run. Change a
-schedule by editing its file and running `lab reschedule`.
+`klause-reference-parallel.json` (the portfolio on 4 cores). `reference.json` is the one-off reference run. Change
+a schedule by editing its file and running `lab reschedule`. A schedule's phase is its last check: the runner checks
+it again one interval later, so staggered schedules stay a day apart.
 
 ## Crash safety
 
