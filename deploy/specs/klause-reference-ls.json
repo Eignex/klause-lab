@@ -1,0 +1,29 @@
+{
+  "name": "klause-reference-ls",
+  "problems": [
+    {"suite": "hakank", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "mzn-bench", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "xcsp3-cop", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "xcsp3-csp", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "miplib2017", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "miplib2010", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "miplib2003", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "miplib3", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "orlib", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "pb-comp-2025", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "pb-comp-wbo", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "pb-comp", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "pb07-opb", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "maxsat-unweighted", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "maxsat-weighted", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qflia", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qflra", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qfidl", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qfrdl", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qflira", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
+  ],
+  "base": {"timeout": "60000", "engine": "ls"},
+  "priority": -2,
+  "confirm": true
+}
