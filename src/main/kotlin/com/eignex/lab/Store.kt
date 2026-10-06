@@ -484,16 +484,23 @@ class Store(file: Path) {
     }
 
     /**
-     * Give schedule [id] a new [experiment], and [intervalSec] when set. Its last commit is forgotten, so the runner
-     * queues the new experiment at the ref's commit on its next check; a run still going is waited for as before.
-     * False when there is no such schedule.
+     * Change schedule [id]: a new [experiment], whose last commit is then forgotten so its next check queues it at the
+     * ref's commit; a new [intervalSec]; and [nextCheckAt], when its next check is due (epoch ms). Unset fields stay. A
+     * schedule keeps its phase otherwise, so staggered schedules stay apart. False when there is no such schedule.
      */
     @Synchronized
-    fun updateSchedule(id: Long, experiment: ExperimentSpec, intervalSec: Long?): Boolean = update(
-        "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?, interval_sec = COALESCE(?, interval_sec), " +
-            "last_sha = NULL, checked_at = NULL WHERE id = ?",
-        Json.encodeToString(experiment), experiment.parallel ?: 0, experiment.priority, intervalSec, id,
-    ) == 1
+    fun updateSchedule(id: Long, experiment: ExperimentSpec?, intervalSec: Long?, nextCheckAt: Long? = null): Boolean = transaction {
+        val found = update("UPDATE schedules SET interval_sec = COALESCE(?, interval_sec) WHERE id = ?", intervalSec, id) == 1
+        if (found && experiment != null) {
+            update(
+                "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?, last_sha = NULL WHERE id = ?",
+                Json.encodeToString(experiment), experiment.parallel ?: 0, experiment.priority, id,
+            )
+        }
+        // A schedule is due one interval after its last check, so its next check sets the last one back by an interval.
+        if (found && nextCheckAt != null) update("UPDATE schedules SET checked_at = ? - interval_sec * 1000 WHERE id = ?", nextCheckAt, id)
+        found
+    }
 
     @Synchronized
     fun deleteSchedule(id: Long): Boolean = update("DELETE FROM schedules WHERE id = ?", id) == 1

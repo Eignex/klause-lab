@@ -43,9 +43,9 @@ data class ScheduleSpec(
     val intervalSec: Long = 3600,
 )
 
-/** A schedule's new experiment, and its new interval when set. */
+/** A change to a schedule: each field set replaces its value; [nextCheckInSec] sets when it is next checked. */
 @Serializable
-data class ScheduleUpdate(val experiment: ExperimentSpec, val intervalSec: Long? = null)
+data class ScheduleUpdate(val experiment: ExperimentSpec? = null, val intervalSec: Long? = null, val nextCheckInSec: Long? = null)
 
 @Serializable
 data class Created(val id: Long)
@@ -259,8 +259,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/schedules/{id}") {
             val spec = call.receive<ScheduleUpdate>()
             require(spec.intervalSec == null || spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
-            validateScheduled(spec.experiment, config)
-            val updated = store.updateSchedule(call.parameters["id"]!!.toLong(), spec.experiment, spec.intervalSec)
+            require(spec.nextCheckInSec == null || spec.nextCheckInSec >= 0) { "nextCheckInSec must not be negative" }
+            spec.experiment?.let { validateScheduled(it, config) }
+            val nextCheckAt = spec.nextCheckInSec?.let { System.currentTimeMillis() + it * 1000 }
+            val updated = store.updateSchedule(call.parameters["id"]!!.toLong(), spec.experiment, spec.intervalSec, nextCheckAt)
             call.respond(if (updated) HttpStatusCode.OK else HttpStatusCode.NotFound, if (updated) "updated" else "no such schedule")
         }
         // The runner's schedule thread finds it due within seconds; a push hook or relay can call this instead of waiting.

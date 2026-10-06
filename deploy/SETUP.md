@@ -112,9 +112,11 @@ waits its turn by priority like any other. A scheduled experiment's configs name
 nothing. A check asks origin for a branch or tag's commit with `git ls-remote`, one small request, and fetches only when
 it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab check <id>` makes a schedule due at once,
 and the runner checks it within 10 s, which is also what a push hook would call. `lab schedules` lists them with the
-last commit and job; `lab unschedule <id>` removes one. `lab reschedule <id> <experiment.json> [interval-sec]`
-replaces a schedule's experiment and forgets its last commit, so the new experiment runs at the ref's commit on the
-next check, once a run still going has ended.
+last commit and job; `lab unschedule <id>` removes one. `lab reschedule <id> <experiment.json|-> [interval-sec|-]
+[next-in-hours]` changes a schedule in place; `-` keeps a field. A new experiment forgets the last commit, so the
+schedule queues it at the ref's commit on its next check, once a run still going has ended; `lab check` makes that
+now. The schedule keeps its phase unless `next-in-hours` sets when it is next checked, which is how schedules are
+staggered.
 
 The Regression trend shows the runs of the schedule's current experiment: a run of an edited one measured something
 else. Runs match when their experiments agree on problems, arms, seeds and repeats; name, priority and `parallel` do
@@ -138,7 +140,7 @@ on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection
 runs per day: `klause-reference-ls.json` (local search only), `klause-reference-bt.json` (backtracking only) and
 `klause-reference-parallel.json` (the portfolio on 4 cores). `reference.json` is the one-off reference run. Change
 a schedule by editing its file and running `lab reschedule`. A schedule's phase is its last check: the runner checks
-it again one interval later, so staggered schedules stay a day apart.
+it again one interval later, so staggered schedules stay a day apart; `lab reschedule <id> - - <hours>` moves one.
 
 ## Crash safety
 
@@ -281,7 +283,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
-| `POST` | `/schedules/{id}` | `{"experiment": <spec>, "intervalSec"?}`: replace a schedule's experiment, rerun at its ref |
+| `POST` | `/schedules/{id}` | `{"experiment"?, "intervalSec"?, "nextCheckInSec"?}`: change a schedule; it keeps its phase unless told |
 | `POST` | `/schedules/{id}/check` | check the schedule's ref now instead of at its next interval |
 | `GET` | `/trend[?name=<schedule>][&all=1]` | a schedule's runs of its current experiment, or all of them; the first klause schedule without a name |
 | `GET` | `/references[?q=&solver=&collection=&verdict=]` | reference coverage, or the results the filters keep |

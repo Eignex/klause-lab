@@ -11,7 +11,8 @@
 #   lab pause <id> | lab resume <id>                         hold a job; a running one stops between its commands
 #   lab wait <id>...                                         block until every job given has ended; prints each end
 #   lab schedule <name> <ref> <experiment.json> <interval-sec>   rerun the experiment on every new commit of <ref>
-#   lab reschedule <id> <experiment.json> [interval-sec]     replace a schedule's experiment; it reruns at the ref now
+#   lab reschedule <id> <experiment.json|-> [interval-sec|-] [next-in-hours]
+#                                                            change a schedule's experiment, interval or next check
 #   lab schedules | lab unschedule <id>
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
@@ -60,7 +61,12 @@ schedule)
     '{name: $name, ref: $ref, intervalSec: $interval, experiment: $experiment[0]}' |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/schedules"; echo ;;
 reschedule)
-  jq -n --argjson interval "${3:-null}" --slurpfile experiment "$2" '{intervalSec: $interval, experiment: $experiment[0]}' |
+  # `-` for the experiment or the interval keeps it; next-in-hours sets when the schedule is next checked.
+  experiment=null; [[ "${2:--}" != - ]] && experiment=$(cat "$2")
+  interval="${3:--}"; [[ "$interval" == - ]] && interval=null
+  next=null; [[ -n "${4:-}" ]] && next=$(awk -v h="$4" 'BEGIN { printf "%d", h * 3600 }')
+  jq -n --argjson interval "$interval" --argjson experiment "$experiment" --argjson next "$next" \
+    '{intervalSec: $interval, experiment: $experiment, nextCheckInSec: $next}' |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/schedules/$1"; echo ;;
 compare) echo "$url/compare?jobs=$(IFS=,; echo "$*")" ;;
 schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",

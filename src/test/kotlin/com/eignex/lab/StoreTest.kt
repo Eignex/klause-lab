@@ -231,6 +231,22 @@ class StoreTest {
     }
 
     @Test
+    fun `a new experiment keeps a schedule's phase, and its next check can be set`() {
+        val store = store()
+        val id = store.createSchedule("s", "main", ExperimentSpec("s", listOf(mapOf("suite" to "s"))), 3600)
+        store.scheduleChecked(id, 1_000_000)
+        store.scheduleRan(id, "abc", 1)
+
+        store.updateSchedule(id, ExperimentSpec("s", listOf(mapOf("suite" to "t"))), intervalSec = null)
+        val kept = store.schedules().single()
+        store.updateSchedule(id, experiment = null, intervalSec = 7200, nextCheckAt = 9_000_000)
+        val moved = store.schedules().single()
+
+        assertEquals(listOf(1_000_000L, null, "t"), listOf(kept.checkedAt, kept.lastSha, kept.experiment.problems.single()["suite"]))
+        assertEquals(listOf(9_000_000L - 7_200_000, 7200L, "t"), listOf(moved.checkedAt, moved.intervalSec, moved.experiment.problems.single()["suite"]))
+    }
+
+    @Test
     fun `a job's clock stops while it waits in the queue`() {
         val store = store()
         val id = store.create("a", "main", listOf("true" to 10L))
