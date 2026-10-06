@@ -24,6 +24,6 @@
     {"suite": "satlib", "per-family": "1000000", "reference": "unsettled"}
   ],
   "base": {"backend": "reference", "timeout": "60000"},
-  "priority": -3,
+  "priority": -2,
   "confirm": true
 }
