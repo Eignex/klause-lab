@@ -10,6 +10,26 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class ExperimentsTest {
+    @Test
+    fun `exact policy is validated and forwarded to each case`() {
+        for (exact in listOf("true", "false")) {
+            val experiment = spec(base = mapOf("exact" to exact))
+            Experiments.validate(experiment, maxParallel = 4)
+            val arm = Experiments.arms(experiment).single()
+
+            val command = Experiments.command("/w/7", Problem("hakank", "agprice"), arm, 1, 0, "/corpus")
+
+            assertContains(command, "'exact=$exact'")
+        }
+    }
+
+    @Test
+    fun `an invalid exact policy is refused`() {
+        assertFailsWith<IllegalArgumentException> {
+            Experiments.validate(spec(base = mapOf("exact" to "yes")), maxParallel = 4)
+        }
+    }
+
     private fun spec(
         configs: List<Map<String, String>> = listOf(emptyMap()),
         grid: Map<String, List<String>> = emptyMap(),

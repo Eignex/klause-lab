@@ -152,6 +152,9 @@ object Experiments {
             }
             require(!arm.ref.startsWith("-")) { "ref must not start with '-'" }
             require(arm.values["timeout"]?.toLongOrNull()?.let { it > 0 } ?: true) { "timeout must be a positive number of ms" }
+            require(arm.values["exact"]?.toBooleanStrictOrNull() != null || "exact" !in arm.values) {
+                "exact must be true or false"
+            }
         }
         require(arms(spec).map { it.label }.distinct().size == arms(spec).size) { "config labels must be unique" }
     }
@@ -240,7 +243,7 @@ object Experiments {
     private const val REFERENCE_KEY = "reference"
     private const val UNCAPPED = 1_000_000
     private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
-    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed")
+    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed", "exact")
     private const val CASE_OVERHEAD_SEC = 120L
     private const val FINGERPRINT_BYTES = 6
     private const val MAX_REPEATS = 100

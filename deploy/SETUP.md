@@ -38,7 +38,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   to `any`. Planning logs how many problems the filter left out.
 - Each entry of `configs` (default: one empty config) is merged over `base`, then crossed with every combination of
   `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 60000), `backend`, `engine`,
-  `processors`, `lp`, `presolve`, `fixed`, and `param.<name>` for `--param <name>=<value>`. An arm without a `label` is
+  `processors`, `lp`, `presolve`, `fixed`, `exact`, and `param.<name>` for `--param <name>=<value>`. `exact=true` forwards
+  klause-cli's `--exact` flag; omit it or use `false` for the default policy. An arm without a `label` is
   named by the values that set it apart.
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
