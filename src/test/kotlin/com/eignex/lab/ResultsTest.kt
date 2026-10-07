@@ -24,6 +24,17 @@ class ResultsTest {
     }
 
     @Test
+    fun `a proof without a solution carries its solve time and the time it is scored by`() {
+        val record = """{"kind":"satisfy","feasible":false,"proven":true,"budgetMs":10000,"stats":{"solveTime":"1.25"}}"""
+        val case = CaseResult(0, Status.DONE, Problem("s", "p"), "a", null, Json.parseToJsonElement(record))
+
+        val lines = Results.casesCsv(listOf(case)).lines()
+        val row = lines[0].split(',').zip(lines[1].split(',')).toMap()
+
+        assertEquals(listOf("", "1250", "1250"), listOf(row["timeToBestMs"], row["solveTimeMs"], row["timeMs"]))
+    }
+
+    @Test
     fun `an arm's bench table has a row per problem of the chosen seed`() {
         val record = """{"kind":"optimize","maximize":false,"feasible":true,"objective":7,"proven":true,"timeToBestMs":40,"budgetMs":1000}"""
         val cases = listOf(1L, 2L).map { seed ->

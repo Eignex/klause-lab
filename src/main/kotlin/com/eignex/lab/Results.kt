@@ -5,11 +5,15 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /** Experiment results out of the lab as CSV. */
 object Results {
-    /** Every case with a record as one CSV row: the case, its problem and arm, and the record's verdict and times. */
+    /**
+     * Every case with a record as one CSV row: the case, its problem and arm, and the record's verdict and times.
+     * `solveTimeMs` is the whole solve, which is how long a proof took when there is no solution to time; `timeMs` is
+     * the time the comparisons score: to the best solution, else the solve for a proof, else the budget.
+     */
     fun casesCsv(cases: List<CaseResult>): String = buildString {
         appendLine(
             "index,status,arm,seed,repeat,suite,problem,collection,family,format,kind,maximize,feasible,objective,proven," +
-                "timeToBestMs,timeToFirstFeasibleMs,budgetMs,error,unsupported,loadError,sourceValidation,floatApproximation",
+                "timeToBestMs,timeToFirstFeasibleMs,solveTimeMs,timeMs,budgetMs,error,unsupported,loadError,sourceValidation,floatApproximation",
         )
         for (case in cases) {
             val record = case.record as? JsonObject
@@ -22,7 +26,8 @@ object Results {
                 case.problem.problem, case.problem.collection, case.problem.family, case.problem.format, field("kind"),
                 field("maximize"), outcome?.feasible?.toString().orEmpty(), outcome?.objective?.toString().orEmpty(),
                 outcome?.proven?.toString().orEmpty(), outcome?.timeToBestMs?.toString().orEmpty(),
-                if (outcome?.feasible == true) field("timeToFirstFeasibleMs") else "", field("budgetMs"), (field("command") == "ERROR").toString(),
+                if (outcome?.feasible == true) field("timeToFirstFeasibleMs") else "",
+                outcome?.solveTimeMs?.toString().orEmpty(), outcome?.timeMs?.toString().orEmpty(), field("budgetMs"), (field("command") == "ERROR").toString(),
                 stat("unsupported"), stat("loadError"), stat("sourceValidation"), stat("floatApproximation"),
             )
             appendLine(row.joinToString(",") { cell(it) })
