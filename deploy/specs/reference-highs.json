@@ -9,6 +9,7 @@
     {"suite": "orlib", "per-family": "1000000", "reference": "missing"}
   ],
   "base": {"backend": "reference", "solver": "highs", "timeout": "60000"},
+  "parallel": 6,
   "priority": -2,
   "confirm": true
 }
