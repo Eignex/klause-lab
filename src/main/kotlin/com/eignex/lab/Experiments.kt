@@ -121,13 +121,15 @@ object Experiments {
     }
 
     /**
-     * Every case, problem by problem: all arms of a problem run back to back, the arm order rotated one place per
-     * problem, so drift over the run and a pause part-way spread evenly across the arms instead of favouring the
-     * arm that always goes first.
+     * Every case, problem by problem. Within a problem the arms alternate: each seed and repeat runs every arm once
+     * before the next starts, so an A/B with repeats goes A, B, A, B rather than A, A, B, B, and drift on the machine
+     * lands on both arms alike. The arm order is rotated one place per problem, so drift over the run and a pause
+     * part-way spread evenly across the arms instead of favouring the arm that always goes first.
      */
     fun cases(problems: Int, arms: Int, seeds: List<Long>, repeats: Int = 1): List<Case> = (0 until problems).flatMap { problem ->
-        (0 until arms).map { (it + problem) % arms }.flatMap { arm ->
-            seeds.ifEmpty { listOf(null) }.flatMap { seed -> (0 until repeats).map { Case(problem, arm, seed, it) } }
+        val order = (0 until arms).map { (it + problem) % arms }
+        seeds.ifEmpty { listOf(null) }.flatMap { seed ->
+            (0 until repeats).flatMap { repeat -> order.map { arm -> Case(problem, arm, seed, repeat) } }
         }
     }
 

@@ -61,10 +61,20 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `every seed of an arm runs before the next arm`() {
-        val cases = Experiments.cases(problems = 1, arms = 2, seeds = listOf(1, 2))
+    fun `the arms alternate over seeds and repeats`() {
+        val cases = Experiments.cases(problems = 1, arms = 2, seeds = listOf(1, 2), repeats = 2)
 
-        assertEquals(listOf(0 to 1L, 0 to 2L, 1 to 1L, 1 to 2L), cases.map { it.arm to it.seed })
+        assertEquals(
+            listOf("0/1/0", "1/1/0", "0/1/1", "1/1/1", "0/2/0", "1/2/0", "0/2/1", "1/2/1"),
+            cases.map { "${it.arm}/${it.seed}/${it.repeat}" },
+        )
+    }
+
+    @Test
+    fun `a problem whose rotation puts the second arm first still alternates`() {
+        val cases = Experiments.cases(problems = 2, arms = 2, seeds = emptyList(), repeats = 2).filter { it.problem == 1 }
+
+        assertEquals(listOf(1, 0, 1, 0), cases.map { it.arm })
     }
 
     @Test

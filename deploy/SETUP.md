@@ -53,7 +53,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
 command per case: a `klause-bench solve-one` of one problem in one arm's worktree. Every arm of a problem runs back to
-back, in an order rotated per problem, so drift and pauses spread evenly over the arms. A case always solves (the
+back, in an order rotated per problem, so drift and pauses spread evenly over the arms; with seeds or repeats the arms
+alternate, every arm running once per seed and repeat before the next (A, B, A, B, not A, A, B, B). A case always solves (the
 bench result cache is off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
 /experiments/<id>/cases`.
 
