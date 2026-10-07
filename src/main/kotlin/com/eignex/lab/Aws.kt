@@ -139,7 +139,14 @@ class AwsCli(private val aws: AwsConfig) {
 }
 
 /** An instance as the lab reaches it: SSH as `ubuntu`, with the lab's key, in the background. */
-class Ssh(private val ip: String, private val aws: AwsConfig, private val knownHosts: Path) {
+class Ssh(
+    private val ip: String,
+    private val aws: AwsConfig,
+    private val knownHosts: Path,
+    /** Checked every second while a command runs: a long step (a build, a corpus fetch) then stops at once on a cancel,
+     *  and the job's instances are terminated rather than left to finish it. */
+    private val cancelled: () -> Boolean = { false },
+) {
     private fun command(script: String): List<String> = Background.prefix + listOf(
         "ssh", "-i", aws.keyFile,
         "-o", "BatchMode=yes",
@@ -159,10 +166,17 @@ class Ssh(private val ip: String, private val aws: AwsConfig, private val knownH
         val process = start(script)
         val output = StringBuilder()
         val reader = thread(isDaemon = true) { output.append(process.inputStream.bufferedReader().readText()) }
-        if (!process.waitFor(timeoutSec, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            reader.join(READ_WAIT_MS)
-            return TIMED_OUT to output.toString()
+        val deadline = System.currentTimeMillis() + timeoutSec * MS_PER_SEC
+        while (!process.waitFor(POLL_MS, TimeUnit.MILLISECONDS)) {
+            if (cancelled()) {
+                process.destroyForcibly()
+                error("cancelled")
+            }
+            if (System.currentTimeMillis() > deadline) {
+                process.destroyForcibly()
+                reader.join(READ_WAIT_MS)
+                return TIMED_OUT to output.toString()
+            }
         }
         reader.join(READ_WAIT_MS)
         return process.exitValue() to output.toString()
@@ -178,6 +192,8 @@ class Ssh(private val ip: String, private val aws: AwsConfig, private val knownH
     companion object {
         const val TIMED_OUT = -1
         private const val READ_WAIT_MS = 5_000L
+        private const val POLL_MS = 1000L
+        private const val MS_PER_SEC = 1000L
         private const val OUTPUT_CHARS = 3000
     }
 }
@@ -420,7 +436,9 @@ class AwsWorker(
         return instances.map { id ->
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
-            AwsHost(id, Ssh(ip, aws, knownHosts), aws.cores, config.solveJavaOpts) { store.cancelRequested(job.id) }
+            AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, aws.cores, config.solveJavaOpts) {
+                store.cancelRequested(job.id)
+            }
         }
     }
 
