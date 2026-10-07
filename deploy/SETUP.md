@@ -192,6 +192,11 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   dealt round-robin. Each instance runs `parallel` cases at once (default `cores`, one per physical core) over SSH under
   `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
   local job.
+- The queue and history show where each job runs (Mac or AWS, and a running AWS job's instance count), and a queued
+  job's place in its own host's queue. A queued job that has not been planned can move between the Mac and AWS from
+  its page, or with `lab host <id> lab|aws [machines]`; once planned, its commands name paths on its host.
+- The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
+  instances.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
   ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
   `aws` job left running and terminates every lab-tagged instance no running job owns.

@@ -292,6 +292,10 @@ class AwsWorker(
 ) {
     private val cli = AwsCli(aws)
     private val busy = AtomicInteger()
+
+    /** Whether any AWS job is running: the runner holds off updating itself until none is, since a restart would end
+     *  its thread and, with it, the job's instances. */
+    val active: Boolean get() = busy.get() > 0
     private val knownHosts = config.dataDir.resolve("aws").resolve("known_hosts")
 
     fun loop() {
@@ -374,6 +378,7 @@ class AwsWorker(
             }
         } finally {
             runCatching { cli.terminate(instances) }.onFailure { runner.log(claimed.id, "could not terminate $instances: ${it.message}") }
+            Files.deleteIfExists(config.jobDir(claimed.id).resolve(INSTANCES_FILE))
             if (instances.isNotEmpty()) runner.log(claimed.id, "terminated $instances")
         }
     }
@@ -393,6 +398,7 @@ class AwsWorker(
             userData.delete()
         }
         runner.log(job.id, "launched ${aws.instanceType} instances $instances")
+        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile().writeText(instances.joinToString("\n", postfix = "\n"))
         return instances.map { id ->
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
@@ -449,6 +455,9 @@ class AwsWorker(
     """.trimIndent() + "\n"
 
     companion object {
+        /** The job's running instances, one id a line, while it has them: what the pages show. */
+        const val INSTANCES_FILE = "aws-instances"
+
         /** [cases] split by problem over [n] instances: a problem's cases, every arm, seed and repeat of it, all on
          *  one, and the problems dealt out in plan order so each instance gets a share of every selection. */
         internal fun shards(cases: List<CaseResult>, n: Int): List<Set<Int>> {

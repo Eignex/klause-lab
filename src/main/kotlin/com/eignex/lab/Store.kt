@@ -755,6 +755,17 @@ class Store(file: Path) {
         )
     }
 
+    /** Move a queued experiment that has not been planned to [host], with [machines] for AWS; false otherwise, since a
+     *  planned job's commands name paths on the host that planned it. */
+    @Synchronized
+    fun setHost(jobId: Long, host: String, machines: Int?): Boolean {
+        val job = job(jobId) ?: return false
+        val spec = job.experiment ?: return false
+        if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
+        val moved = spec.copy(host = host, machines = machines.takeIf { host == Experiments.AWS_HOST })
+        return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
+    }
+
     /** Set an experiment's description; false when there is no such experiment. */
     @Synchronized
     fun setDescription(jobId: Long, description: String): Boolean {

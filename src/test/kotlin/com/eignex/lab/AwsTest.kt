@@ -37,4 +37,17 @@ class AwsTest {
         assertEquals(listOf(listOf(onLab), listOf(onAws)), listOf(store.queueOrder(), store.queueOrder(Experiments.AWS_HOST)))
         assertEquals(listOf(onLab, onAws), listOf(store.next()?.id, store.next(Experiments.AWS_HOST)?.id))
     }
+
+    @Test
+    fun `a queued job moves to AWS until it is planned`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = store.create("e", "main", emptyList(), experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d"))
+
+        val moved = store.setHost(id, Experiments.AWS_HOST, 2)
+        val spec = store.job(id)?.experiment
+        val planned = store.create("p", "main", listOf("true" to 10L), experiment = ExperimentSpec("p", listOf(mapOf("suite" to "s"))))
+
+        assertEquals(listOf(true, Experiments.AWS_HOST, 2), listOf(moved, spec?.host, spec?.machines))
+        assertEquals(false, store.setHost(planned, Experiments.AWS_HOST, null))
+    }
 }

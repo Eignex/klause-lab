@@ -18,8 +18,8 @@ internal fun indexPage(
     limit: Int,
     before: Long?,
     name: String?,
-    /** Queued jobs in the order the runner takes them ([Store.queueOrder]). */
-    queueOrder: List<Long> = emptyList(),
+    /** Each host's queued jobs in the order they are taken ([Store.queueOrder]). */
+    queueOrder: Map<String, List<Long>> = emptyMap(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
@@ -75,9 +75,7 @@ internal fun jobPage(
     if (job.startedAt != null) append("<dt>started</dt><dd>${ago(job.startedAt)}</dd>")
     if (job.finishedAt != null) append("<dt>finished</dt><dd>${ago(job.finishedAt)}</dd>")
     append("<dt>elapsed</dt><dd>${elapsed(job)}</dd>")
-    job.experiment?.takeIf { it.host == Experiments.AWS_HOST }?.let {
-        append("<dt>host</dt><dd>AWS${it.machines?.let { m -> ", $m instances" } ?: ""}, each running ${job.parallel} at once</dd>")
-    }
+    append("<dt>where</dt><dd>${hostCell(config, job)}</dd>")
     append("<dt>parallel</dt><dd>${job.parallel}</dd><dt>priority</dt><dd>${job.priority}</dd>")
     append("<dt>files</dt><dd><a href=\"/jobs/${job.id}/files\">all files</a>")
     for (log in listOf("setup.log", "job.log")) {
@@ -104,6 +102,17 @@ internal fun jobPage(
         append("<button onclick=\"act('/jobs/$id/priority', {priority: +document.getElementById('priority').value})\">set</button>")
         append("<label>parallel <input id=\"parallel\" type=\"number\" min=\"1\" max=\"${config.maxParallel}\" value=\"${job.parallel}\"></label>")
         append("<button onclick=\"act('/jobs/$id/parallel', {parallel: +document.getElementById('parallel').value})\">set</button>")
+        // A job changes host only before it is planned: its commands then name paths on the host that planned it.
+        if (job.status == Status.QUEUED && job.commands.isEmpty() && job.experiment != null) {
+            if (job.experiment.host == Experiments.AWS_HOST) {
+                append("<label>machines <input id=\"machines\" type=\"number\" min=\"1\" max=\"${config.aws?.maxInstances ?: 1}\" ")
+                append("value=\"${job.experiment.machines ?: ""}\" placeholder=\"all free\"></label>")
+                append("<button onclick=\"act('/jobs/$id/host', {host: 'aws', machines: +document.getElementById('machines').value || null})\">set</button>")
+                append("<button onclick=\"act('/jobs/$id/host', {host: 'lab'})\">run on the Mac</button>")
+            } else if (config.aws != null) {
+                append("<button onclick=\"act('/jobs/$id/host', {host: 'aws'}, 'Run job $id on AWS instead of the Mac?')\">run on AWS</button>")
+            }
+        }
         if (!job.cancelRequested) {
             append("<button class=\"danger\" onclick=\"act('/jobs/$id/cancel', null, 'Cancel job $id?')\">cancel</button>")
         }
@@ -879,17 +888,17 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
         if (accel.isEmpty()) "" else ", ${esc(accel)}"
 }
 
-private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>): String {
+private fun activeTable(config: Config, active: List<Job>, queueOrder: Map<String, List<Long>>): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
-    // The order the runner takes queued jobs in, as Store.next picks them.
-    val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
+    // The order each host takes its queued jobs in, as Store.next picks them.
+    val positions = queueOrder.values.flatMap { order -> order.withIndex().map { (index, id) -> id to index + 1 } }.toMap()
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
     return jobTable(config, ordered, positions, filterable = false)
 }
 
 private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean): String = buildString {
     if (jobs.isEmpty()) return "<p class=\"muted\">No jobs.</p>"
-    append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>status</th><th>progress</th>")
+    append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>")
     append("<th>created</th><th>elapsed</th><th></th></tr>")
     for (job in jobs) {
         if (filterable) {
@@ -910,12 +919,13 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${statusCell(job, positions[job.id])}</td><td>${progress(job)}</td>")
+        append("<td>${refText(config, job)}</td><td>${hostCell(config, job)}</td><td>${statusCell(job, positions[job.id])}</td>")
+        append("<td>${progress(job)}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
         val running = job.commands.filter { it.status == Status.RUNNING }
         if (running.isNotEmpty() && !filterable) {
-            append("<tr class=\"sub\"><td></td><td colspan=\"7\">")
+            append("<tr class=\"sub\"><td></td><td colspan=\"8\">")
             for (command in running) {
                 append("<div><code>${esc(command.cmd.take(200))}</code> ${duration(command.startedAt, null)} ")
                 append("<a href=\"/jobs/${job.id}/files/${command.index}.out?tail=$TAIL_BYTES\">out</a> ")
@@ -950,6 +960,20 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
     append("</table></div>")
 }
 
+/** Where a job runs: the lab Mac, or AWS with the instances it has while it runs and asks for while it waits. */
+private fun hostCell(config: Config, job: Job): String {
+    val spec = job.experiment
+    if (spec?.host != Experiments.AWS_HOST) return "<span class=\"where\">Mac</span>"
+    val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
+        ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
+    val detail = when {
+        instances.isNotEmpty() -> "${instances.size} × ${config.aws?.instanceType ?: "instance"}"
+        job.status in ACTIVE -> spec.machines?.let { "asks for $it" } ?: "as many as are free"
+        else -> null
+    }
+    return "<span class=\"where aws\">AWS</span>" + (detail?.let { "<br><small title=\"${esc(instances.joinToString())}\">$it</small>" } ?: "")
+}
+
 private fun statusCell(job: Job, position: Int?): String {
     val partial = job.status == Status.DONE && job.failed > 0
     val label = if (partial) {
@@ -960,7 +984,7 @@ private fun statusCell(job: Job, position: Int?): String {
     val notes = listOfNotNull(
         "cancelling".takeIf { job.cancelRequested && job.status in ACTIVE },
         "<span class=\"badge\">paused</span>".takeIf { job.paused && job.status in ACTIVE },
-        "#$position in queue".takeIf { position != null },
+        "#$position in the ${if (job.experiment?.host == Experiments.AWS_HOST) "AWS" else "Mac"} queue".takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
         job.error?.let { "<span title=\"${esc(it)}\">${esc(shortError(it))}</span>" },
     )
@@ -1072,6 +1096,7 @@ code{font-size:12px;word-break:break-all}
 .RUNNING{color:var(--run)}.DONE{color:var(--ok)}.PARTIAL{color:var(--warn)}.FAILED{color:var(--bad)}.CANCELLED,.QUEUED{color:var(--off)}
 .PARTIAL a{color:inherit}
 .badge{background:var(--warn);color:var(--bg);border-radius:3px;padding:0 4px}
+.where{border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.where.aws{border-color:var(--link);color:var(--link)}
 .bar{display:flex;width:90px;height:6px;margin:6px 0 2px;background:var(--soft);border-radius:3px;overflow:hidden}
 .bar i{display:block}.bar .ok{background:var(--ok)}.bar .bad{background:var(--bad)}.bar .run{background:var(--run)}
 .tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.tools input{font:inherit;padding:3px 6px;min-width:200px}

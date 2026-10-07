@@ -37,6 +37,9 @@ data class PrioritySpec(val priority: Int)
 @Serializable
 data class DescriptionSpec(val description: String)
 
+@Serializable
+data class HostSpec(val host: String, val machines: Int? = null)
+
 /** An experiment rerun on every new commit of [ref]: each run is [experiment] with every arm at that commit. */
 @Serializable
 data class ScheduleSpec(
@@ -76,7 +79,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name)
-            val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name, store.queueOrder())
+            val queues = listOf(Experiments.LAB_HOST, Experiments.AWS_HOST).associateWith { store.queueOrder(it) }
+            val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name, queues)
             call.respondText(page, ContentType.Text.Html)
         }
         get("/health") {
@@ -247,6 +251,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             requireParallel(spec.parallel, config)
             val found = store.setParallel(call.parameters["id"]!!.toLong(), spec.parallel)
             call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "parallel ${spec.parallel}" else "no such job")
+        }
+        post("/jobs/{id}/host") {
+            val id = call.parameters["id"]!!.toLong()
+            val spec = call.receive<HostSpec>()
+            val job = store.job(id)
+            val experiment = requireNotNull(job?.experiment) { "no such experiment" }
+            requireHost(experiment.copy(host = spec.host, machines = spec.machines.takeIf { spec.host == Experiments.AWS_HOST }), config)
+            val moved = store.setHost(id, spec.host, spec.machines)
+            call.respond(
+                if (moved) HttpStatusCode.OK else HttpStatusCode.Conflict,
+                if (moved) "runs on ${spec.host}" else "only a queued job that has not been planned can change host",
+            )
         }
         post("/jobs/{id}/description") {
             val spec = call.receive<DescriptionSpec>()

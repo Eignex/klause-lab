@@ -58,7 +58,7 @@ class PagesTest {
             val failed = client.get("/jobs/$done?failed") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
             val json = client.get("/jobs/$done")
 
-            assertContains(index, "#1 in queue")
+            assertContains(index, "#1 in the Mac queue")
             assertContains(index, "/jobs/$done?failed\">1 failed</a>")
             assertContains(index, "https://github.com/Eignex/klause/commit/0123456789abcdef")
             assertContains(job.bodyAsText(), "<code>false</code>")

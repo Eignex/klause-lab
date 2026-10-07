@@ -51,7 +51,9 @@ class Runner(private val config: Config, private val store: Store) {
         if (config.requireDocker) awaitDocker()
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
         config.aws?.let { aws ->
-            thread(isDaemon = true, name = "aws") { AwsWorker(this, store, config, aws).loop() }
+            val worker = AwsWorker(this, store, config, aws)
+            awsActive = { worker.active }
+            thread(isDaemon = true, name = "aws") { worker.loop() }
         }
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
         // priorities then decide when it runs.
@@ -64,7 +66,7 @@ class Runner(private val config: Config, private val store: Store) {
         while (true) {
             // Only between jobs: an update builds on this machine and restarts the runner, so a job yields to it
             // between its cases (see dispatch) and the update runs here with nothing running.
-            updater.maybeUpdate()
+            if (!awsActive()) updater.maybeUpdate()
             if (!disk.allowsWork()) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
@@ -218,7 +220,10 @@ class Runner(private val config: Config, private val store: Store) {
         if (host.yieldsToPriority) store.shouldYield(jobId) else store.job(jobId)?.paused == true
 
     /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
-    private fun updateDue(jobId: Long): Boolean = updater.due().also { if (it) log(jobId, "yielding for a lab update") }
+    private fun updateDue(jobId: Long): Boolean = !awsActive() && updater.due().also { if (it) log(jobId, "yielding for a lab update") }
+
+    /** Whether an AWS job is running, which holds a lab update back. */
+    private var awsActive: () -> Boolean = { false }
 
     /** Cores the running cases at [indices] of [job] hold. */
     private fun held(indices: Collection<Int>, job: Job): Int = job.commands.filter { it.index in indices }.sumOf { it.cores }
