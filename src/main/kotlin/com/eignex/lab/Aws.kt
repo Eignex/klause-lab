@@ -49,7 +49,7 @@ data class AwsConfig(
                 region = requireNotNull(get("region")) { "aws.properties needs region" },
                 profile = get("profile", "klause-lab")!!,
                 instanceType = get("instanceType", "c7i.2xlarge")!!,
-                maxInstances = get("maxInstances", "5")!!.toInt(),
+                maxInstances = get("maxInstances", "4")!!.toInt(),
                 keyName = requireNotNull(get("keyName")) { "aws.properties needs keyName" },
                 keyFile = requireNotNull(get("keyFile")) { "aws.properties needs keyFile" },
                 securityGroup = requireNotNull(get("securityGroup")) { "aws.properties needs securityGroup" },
@@ -424,8 +424,16 @@ class AwsWorker(
         val userData = Files.createTempFile("klause-lab-user-data", ".sh").toFile()
         try {
             userData.writeText(bootstrap())
-            repeat(machines) { n ->
-                val id = runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }
+            for (n in 0 until machines) {
+                // AWS refusing more for a quota or a lack of capacity is not a reason to fail a job that already has
+                // instances: it runs on those. Without any, the launch is retried like any other step.
+                val id = runCatching { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }.getOrElse { e ->
+                    if (instances.isNotEmpty() && CAPACITY.containsMatchIn(e.message.orEmpty())) {
+                        runner.log(job.id, "AWS gave no more instances (${CAPACITY.find(e.message.orEmpty())?.value}); running on ${instances.size}")
+                        break
+                    }
+                    runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }
+                }
                 instances += id
             }
         } finally {
@@ -535,6 +543,8 @@ class AwsWorker(
         private const val POLL_MS = 10_000L
         private const val SSH_STEP_SEC = 60L
         private const val SHA_LOG = 9
+        /** The errors AWS refuses an instance with for a quota or a lack of capacity, rather than for a fault. */
+        private val CAPACITY = Regex("VcpuLimitExceeded|InstanceLimitExceeded|InsufficientInstanceCapacity|MaxSpotInstanceCountExceeded")
         private const val S3_PUSH_TIMEOUT_SEC = 3600L
         /** Gradle's dependency cache and wrapper distribution, as one archive in the corpus bucket. */
         private const val GRADLE_ARCHIVE = "gradle/home.tar.zst"

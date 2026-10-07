@@ -2,7 +2,7 @@
 # One-time AWS setup for running experiments with "host": "aws". Run it once, from a machine with an admin AWS session
 # (`aws login`) that can ssh to the lab Mac:
 #   deploy/aws-setup.sh [user@lab-host]          default rasmusros@192.168.50.104
-# Settings: AWS_REGION (default eu-north-1), INSTANCE_TYPE (default c7i.2xlarge), MAX_INSTANCES (default 5),
+# Settings: AWS_REGION (default eu-north-1), INSTANCE_TYPE (default c7i.2xlarge), MAX_INSTANCES (default 4: the account's default quota of 32 vCPUs on demand fits four 8-vCPU instances),
 # ADMIN_PROFILE (default: the CLI's default profile).
 #
 # It creates, or reuses when they exist:
@@ -18,7 +18,7 @@ set -euo pipefail
 host="${1:-rasmusros@192.168.50.104}"
 region="${AWS_REGION:-eu-north-1}"
 type="${INSTANCE_TYPE:-c7i.2xlarge}"
-max="${MAX_INSTANCES:-5}"
+max="${MAX_INSTANCES:-4}"
 name=klause-lab
 admin=(aws --region "$region" --output text ${ADMIN_PROFILE:+--profile "$ADMIN_PROFILE"})
 work="$(mktemp -d)"

@@ -15,7 +15,7 @@ class AwsTest {
         file.toFile().writeText("region=eu-north-1\nkeyName=klause-lab\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
         val aws = AwsConfig.load(file)!!
 
-        assertEquals(listOf("c7i.2xlarge", "5", "4", "klause-lab"), listOf(aws.instanceType, "${aws.maxInstances}", "${aws.cores}", aws.profile))
+        assertEquals(listOf("c7i.2xlarge", "4", "4", "klause-lab"), listOf(aws.instanceType, "${aws.maxInstances}", "${aws.cores}", aws.profile))
     }
 
     @Test

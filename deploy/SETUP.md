@@ -182,7 +182,7 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
   launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
   It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
-  `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` 5, `cores` 4, `maxHours` 24,
+  `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` 4, which the account's default quota of 32 on-demand vCPUs fits, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
   start the AWS worker.
 - The corpus cache lives in a private S3 bucket in the same region, `klause-lab-corpus-<account>-<region>`. An instance
