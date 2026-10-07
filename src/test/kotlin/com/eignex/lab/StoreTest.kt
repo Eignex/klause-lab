@@ -264,11 +264,14 @@ class StoreTest {
         store.scheduleChecked(id, 1_000_000)
         store.scheduleRan(id, "abc", 1)
 
+        store.updateSchedule(id, ExperimentSpec("s", listOf(mapOf("suite" to "s")), description = "now described"), intervalSec = null)
+        val described = store.schedules().single()
         store.updateSchedule(id, ExperimentSpec("s", listOf(mapOf("suite" to "t"))), intervalSec = null)
         val kept = store.schedules().single()
         store.updateSchedule(id, experiment = null, intervalSec = 7200, nextCheckAt = 9_000_000)
         val moved = store.schedules().single()
 
+        assertEquals("abc", described.lastSha)
         assertEquals(listOf(1_000_000L, null, "t"), listOf(kept.checkedAt, kept.lastSha, kept.experiment.problems.single()["suite"]))
         assertEquals(listOf(9_000_000L - 7_200_000, 7200L, "t"), listOf(moved.checkedAt, moved.intervalSec, moved.experiment.problems.single()["suite"]))
     }

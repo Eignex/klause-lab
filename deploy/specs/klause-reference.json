@@ -1,5 +1,6 @@
 {
   "name": "klause-reference",
+  "description": "Daily broad check: the default sequential portfolio on up to 3 per family and 60 per suite of every benchmark suite, at 60 s.",
   "problems": [
     {"suite": "hakank", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "mzn-bench", "per-family": "3", "max": "60", "seed": "1"},

@@ -482,16 +482,20 @@ class Store(file: Path) {
     }
 
     /**
-     * Change schedule [id]: a new [experiment], whose last commit is then forgotten so its next check queues it at the
-     * ref's commit; a new [intervalSec]; and [nextCheckAt], when its next check is due (epoch ms). Unset fields stay. A
-     * schedule keeps its phase otherwise, so staggered schedules stay apart. False when there is no such schedule.
+     * Change schedule [id]: a new [experiment]; a new [intervalSec]; and [nextCheckAt], when its next check is due
+     * (epoch ms). Unset fields stay. An experiment that measures something else ([Experiments.fingerprint]) forgets the
+     * last commit, so the next check queues it at the ref's commit; one that only changes how it runs or is described
+     * does not. A schedule keeps its phase otherwise, so staggered schedules stay apart. False when there is no such
+     * schedule.
      */
     @Synchronized
     fun updateSchedule(id: Long, experiment: ExperimentSpec?, intervalSec: Long?, nextCheckAt: Long? = null): Boolean = transaction {
+        val old = schedules().firstOrNull { it.id == id }?.experiment
         val found = update("UPDATE schedules SET interval_sec = COALESCE(?, interval_sec) WHERE id = ?", intervalSec, id) == 1
         if (found && experiment != null) {
+            val changed = old == null || Experiments.fingerprint(old) != Experiments.fingerprint(experiment)
             update(
-                "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?, last_sha = NULL WHERE id = ?",
+                "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?" + (if (changed) ", last_sha = NULL" else "") + " WHERE id = ?",
                 Json.encodeToString(experiment), experiment.parallel ?: 0, experiment.priority, id,
             )
         }
@@ -727,6 +731,14 @@ class Store(file: Path) {
         )
     }
 
+    /** Set an experiment's description; false when there is no such experiment. */
+    @Synchronized
+    fun setDescription(jobId: Long, description: String): Boolean {
+        val spec = job(jobId)?.experiment ?: return false
+        return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(spec.copy(description = description)), jobId) == 1
+    }
+
+    /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
     @Synchronized
     fun setParallel(jobId: Long, parallel: Int): Boolean =
         update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1

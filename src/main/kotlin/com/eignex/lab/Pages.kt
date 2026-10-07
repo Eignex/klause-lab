@@ -63,7 +63,9 @@ internal fun jobPage(
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
     append(head("${job.id} ${job.name} · klause lab", live = active))
-    append("<header><h1>${job.id} ${esc(job.name)}</h1></header>")
+    append("<header><h1>${job.id} ${esc(job.name)}</h1>")
+    job.experiment?.description?.takeIf { it.isNotBlank() }?.let { append("<p class=\"description\">${esc(it)}</p>") }
+    append("</header>")
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
@@ -875,14 +877,18 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
                 job.status in ACTIVE -> "active"
                 else -> job.status.name.lowercase()
             }
-            val text = esc(listOfNotNull(job.name, job.ref, job.sha).joinToString(" ").lowercase())
+            val text = esc(listOfNotNull(job.name, job.ref, job.sha, job.experiment?.description).joinToString(" ").lowercase())
             append("<tr data-state=\"$state\" data-text=\"$text\">")
         } else {
             append("<tr>")
         }
         append("<td><a href=\"/jobs/${job.id}\">${job.id}</a></td>")
         val base = job.name.substringBefore('@')
-        append("<td><a class=\"plain\" href=\"/${query("name" to base)}\" title=\"all runs of ${esc(base)}\">${esc(job.name)}</a></td>")
+        append("<td><a class=\"plain\" href=\"/${query("name" to base)}\" title=\"all runs of ${esc(base)}\">${esc(job.name)}</a>")
+        job.experiment?.description?.takeIf { it.isNotBlank() }?.let {
+            append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
+        }
+        append("</td>")
         append("<td>${refText(config, job)}</td><td>${statusCell(job, positions[job.id])}</td><td>${progress(job)}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
@@ -1037,7 +1043,8 @@ body{font:14px system-ui,sans-serif;margin:0 auto;max-width:1440px;padding:24px 
 @media (max-width:700px){body{padding:16px}}
 a{color:var(--link)}a.plain{color:inherit;text-decoration:none}a.plain:hover{text-decoration:underline}
 h1{margin:0 0 4px}h1 code{font-size:inherit}h1 a{color:inherit;text-decoration:none}h2{font-size:16px;margin:32px 0 10px}h2 small{font-weight:normal}
-.muted{color:var(--muted)}.scroll{overflow-x:auto}
+.muted{color:var(--muted)}p.description{margin:4px 0 0;max-width:80ch}
+td .desc{color:var(--muted);font-size:.85em;max-width:60ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%}td,th{padding:6px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 th.num,td.num{text-align:right}tr.sub td{border-top:0;padding-top:0;font-size:12px}tr.sub div{margin:2px 0}
 code{font-size:12px;word-break:break-all}

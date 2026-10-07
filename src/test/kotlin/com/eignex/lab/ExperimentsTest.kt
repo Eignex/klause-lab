@@ -208,4 +208,11 @@ class ExperimentsTest {
         assertEquals(Experiments.fingerprint(sweep, a), Experiments.fingerprint(sweep, a.reversed()))
         assertNotEquals(Experiments.fingerprint(sweep, a), Experiments.fingerprint(sweep, a + Problem("s", "c")))
     }
+
+    @Test
+    fun `a description is not part of what a spec measures`() {
+        val sweep = spec(base = mapOf("timeout" to "10000"))
+
+        assertEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(description = "the status sweep")))
+    }
 }

@@ -34,6 +34,9 @@ data class ParallelSpec(val parallel: Int)
 @Serializable
 data class PrioritySpec(val priority: Int)
 
+@Serializable
+data class DescriptionSpec(val description: String)
+
 /** An experiment rerun on every new commit of [ref]: each run is [experiment] with every arm at that commit. */
 @Serializable
 data class ScheduleSpec(
@@ -88,6 +91,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
             val spec = call.receive<ExperimentSpec>()
+            requireDescription(spec)
             Experiments.validate(spec, config.maxParallel, config.cores)
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
@@ -243,6 +247,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val found = store.setParallel(call.parameters["id"]!!.toLong(), spec.parallel)
             call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "parallel ${spec.parallel}" else "no such job")
         }
+        post("/jobs/{id}/description") {
+            val spec = call.receive<DescriptionSpec>()
+            require(spec.description.isNotBlank()) { "description must not be blank" }
+            val found = store.setDescription(call.parameters["id"]!!.toLong(), spec.description.trim())
+            call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "described" else "no such experiment")
+        }
         post("/jobs/{id}/priority") {
             val spec = call.receive<PrioritySpec>()
             val found = store.setPriority(call.parameters["id"]!!.toLong(), spec.priority)
@@ -319,7 +329,14 @@ private const val MAX_COMPARED = 6
 private fun worktrees(config: Config, id: Long): List<File> =
     config.worktree(id).toFile().parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList()
 
+/** An experiment says what it is for, so the queue and the history read as more than names. */
+private fun requireDescription(spec: ExperimentSpec) = require(spec.description.isNotBlank()) {
+    "description is required: a sentence or two on what the experiment tests and why, e.g. \"A/B of #2232's " +
+        "continuation scheduler against main on the sweep set, to see whether it closes the uf250 gap\""
+}
+
 private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
+    requireDescription(experiment)
     Experiments.validate(experiment, config.maxParallel, config.cores)
     require(Experiments.arms(experiment).none { "ref" in it.values }) {
         "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"

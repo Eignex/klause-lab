@@ -25,6 +25,9 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 }
 ```
 
+- `description` (required): a sentence or two on what the experiment tests and why. The queue, the history and the
+  job page show it, and the history's filter searches it; `lab describe <id> <text>` changes it later. Scheduled runs
+  carry their schedule's, and a confirmation job describes itself.
 - `problems` are `klause-bench select` filters: `suite` or `set` (one is required), `kind`, `category`, `tag`, `name`,
   `per-family`, `max`, `seed`, `balance`. A list of such selections pools their problems, each selection capped on
   its own, so `[{"suite": "hakank", "max": "60"}, {"suite": "xcsp3-cop", "max": "60"}]` takes 60 of each.

@@ -40,6 +40,8 @@ data class ExperimentSpec(
     val confirm: Boolean = false,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),
+    /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
+    val description: String = "",
 )
 
 /** One configuration of an experiment: its [label] and the solve arguments, `ref` included. */
@@ -75,6 +77,7 @@ object Experiments {
     fun fingerprint(spec: ExperimentSpec): String {
         val measured = spec.copy(
             name = "",
+            description = "",
             problems = spec.problems.map { it.toSortedMap() },
             base = (spec.base - "ref").toSortedMap(),
             configs = spec.configs.map { it.toSortedMap() },

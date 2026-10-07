@@ -1,5 +1,6 @@
 {
   "name": "reference",
+  "description": "One-off reference run: each suite's reference solver (clasp, z3, SCIP, cp-sat) at 60 s on one core, over every problem without a settled verdict.",
   "problems": [
     {"suite": "hakank", "per-family": "1000000", "reference": "unsettled"},
     {"suite": "mzn-bench", "per-family": "1000000", "reference": "unsettled"},

@@ -55,6 +55,8 @@ object Confirm {
         val config = spec.configs.firstOrNull().orEmpty() - "ref" - "label"
         return ExperimentSpec(
             name = name(series, after, job),
+            description = "Confirms run $job's flips against the run before it at ${before.take(SHA_LENGTH)}: " +
+                "${flips.lost.size} lost and ${flips.gained.size} gained, rerun $REPEATS times on both commits.",
             problems = emptyList(),
             problemList = (flips.lost + flips.gained).take(MAX_PROBLEMS),
             base = spec.base - "ref",
