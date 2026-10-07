@@ -182,7 +182,12 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
   It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
   `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` 5, `cores` 4, `maxHours` 24,
-  the MiniZinc version). The lab reads that file; `lab update` restarts the runner to start the AWS worker.
+  the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
+  start the AWS worker.
+- The corpus cache lives in a private S3 bucket in the same region, `klause-lab-corpus-<account>-<region>`. An instance
+  syncs it down while it builds (fast and free within the region) and, after planning, pushes back any collection it
+  had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
+  the role `klause-lab-instance`, which may read and write only that bucket.
 - The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
   claims the next `aws` job while instances are free and gives it `machines` of them (default: all free ones, at most
   `maxInstances` over every job), each job on its own thread.

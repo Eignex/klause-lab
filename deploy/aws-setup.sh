@@ -11,6 +11,8 @@
 #   - an IAM user `klause-lab` whose only rights are to launch tagged instances of INSTANCE_TYPE with that key and group,
 #     tag them at launch, terminate instances tagged klause-lab, read the public Ubuntu image id, and admit the Mac's
 #     current address to the group (its address can change); its access key goes into the Mac's `klause-lab` profile;
+#   - an S3 bucket `klause-lab-corpus-<account>-<region>` holding a copy of the corpus cache, and an instance role
+#     `klause-lab-instance` that may read and write only that bucket, which the IAM user may pass to its instances;
 #   - `$LAB_DATA/aws/aws.properties` on the Mac, which the lab reads: no service needs reinstalling.
 set -euo pipefail
 host="${1:-rasmusros@192.168.50.104}"
@@ -56,6 +58,32 @@ fi
   >/dev/null 2>&1 || true
 echo "security group $sg"
 
+# Corpus cache: a private bucket, and the role the instances read and write it with.
+bucket="$name-corpus-$account-$region"
+if ! "${admin[@]}" s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
+  "${admin[@]}" s3api create-bucket --bucket "$bucket" --create-bucket-configuration "LocationConstraint=$region" >/dev/null
+fi
+"${admin[@]}" s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+role="$name-instance"
+cat > "$work/trust.json" <<EOF
+{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}]}
+EOF
+cat > "$work/corpus.json" <<EOF
+{"Version": "2012-10-17", "Statement": [
+  {"Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::$bucket"},
+  {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": "arn:aws:s3:::$bucket/*"}
+]}
+EOF
+"${admin[@]}" iam get-role --role-name "$role" >/dev/null 2>&1 ||
+  "${admin[@]}" iam create-role --role-name "$role" --assume-role-policy-document "file://$work/trust.json" >/dev/null
+"${admin[@]}" iam put-role-policy --role-name "$role" --policy-name "$name-corpus" --policy-document "file://$work/corpus.json"
+if ! "${admin[@]}" iam get-instance-profile --instance-profile-name "$role" >/dev/null 2>&1; then
+  "${admin[@]}" iam create-instance-profile --instance-profile-name "$role" >/dev/null
+  "${admin[@]}" iam add-role-to-instance-profile --instance-profile-name "$role" --role-name "$role"
+fi
+echo "corpus bucket $bucket, instance role $role"
+
 # IAM user with the narrowest policy that lets the lab do its job.
 cat > "$work/policy.json" <<EOF
 {
@@ -82,7 +110,10 @@ cat > "$work/policy.json" <<EOF
     {"Sid": "UbuntuImage", "Effect": "Allow", "Action": "ssm:GetParameter",
      "Resource": "arn:aws:ssm:$region::parameter/aws/service/canonical/*"},
     {"Sid": "AdmitTheMac", "Effect": "Allow", "Action": "ec2:AuthorizeSecurityGroupIngress",
-     "Resource": "arn:aws:ec2:$region:$account:security-group/$sg"}
+     "Resource": "arn:aws:ec2:$region:$account:security-group/$sg"},
+    {"Sid": "PassInstanceRole", "Effect": "Allow", "Action": "iam:PassRole",
+     "Resource": "arn:aws:iam::$account:role/$role",
+     "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}}
   ]
 }
 EOF
@@ -106,5 +137,7 @@ maxInstances=$max
 keyName=$name
 keyFile=/Users/$(ssh "$host" whoami)/klause-lab-data/aws/$name.pem
 securityGroup=$sg
+corpusBucket=$bucket
+instanceProfile=$role
 EOF
 echo "wrote ~/klause-lab-data/aws/aws.properties on $host; restart the lab (lab update) to start the AWS worker"

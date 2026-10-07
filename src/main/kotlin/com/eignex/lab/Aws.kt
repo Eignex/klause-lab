@@ -34,6 +34,11 @@ data class AwsConfig(
     val minizinc: String,
     /** An image to launch instead of the current Ubuntu 24.04 one. */
     val ami: String?,
+    /** An S3 bucket holding a copy of the corpus cache: an instance syncs it down while it builds and pushes back what
+     *  it had to fetch, so each collection is fetched from its source once. Null: every instance fetches its own. */
+    val corpusBucket: String? = null,
+    /** The instance profile whose role may read and write [corpusBucket]. */
+    val instanceProfile: String? = null,
 ) {
     companion object {
         fun load(file: Path): AwsConfig? {
@@ -53,6 +58,8 @@ data class AwsConfig(
                 maxHours = get("maxHours", "24")!!.toInt(),
                 minizinc = get("minizinc", "2.9.7")!!,
                 ami = get("ami"),
+                corpusBucket = get("corpusBucket"),
+                instanceProfile = get("instanceProfile"),
             )
         }
     }
@@ -78,6 +85,7 @@ class AwsCli(private val aws: AwsConfig) {
         "--key-name", aws.keyName,
         "--security-group-ids", aws.securityGroup,
         *(aws.subnet?.let { arrayOf("--subnet-id", it) } ?: emptyArray()),
+        *(aws.instanceProfile?.let { arrayOf("--iam-instance-profile", "Name=$it") } ?: emptyArray()),
         "--instance-initiated-shutdown-behavior", "terminate",
         "--user-data", "file://${userData.absolutePath}",
         "--metadata-options", "HttpTokens=required",
@@ -357,6 +365,12 @@ class AwsWorker(
             // never fetch it side by side.
             val selections = spec.problems.map { Experiments.selectArgs(it) }
             parallelOn(hosts.drop(1)) { host -> selections.forEach { host.select(host.worktree(primary), it) } }
+            aws.corpusBucket?.let { bucket ->
+                // Before any case runs, so the upload takes nothing from them.
+                runner.log(job.id, "${hosts.first().instance}: pushing newly fetched corpora to s3://$bucket")
+                runCatching { hosts.first().ssh.run(s3Sync("~/corpus", "s3://$bucket/corpus"), S3_PUSH_TIMEOUT_SEC) }
+                    .onFailure { runner.log(job.id, "corpus push failed, the next job fetches upstream: ${it.message}") }
+            }
             store.setup(job.id, primary)
             val shards = shards(job.id, hosts.size)
             runner.log(job.id, "running on ${hosts.size} instances: " + hosts.mapIndexed { i, h -> "${h.instance} (${shards[i].size} cases)" }.joinToString())
@@ -419,6 +433,8 @@ class AwsWorker(
         val script = buildString {
             appendLine("set -euo pipefail; ${AwsHost.ENV}")
             appendLine("mkdir -p ~/work ~/job/cases ~/corpus")
+            // The corpus comes down from the bucket while the build runs; a failed sync only means fetching upstream.
+            aws.corpusBucket?.let { appendLine("(${s3Sync("s3://$it/corpus", "~/corpus")} || true) > ~/corpus-sync.log 2>&1 & sync=${'$'}!") }
             appendLine("[ -d ~/repo/.git ] || git clone -q --filter=blob:none --no-checkout ${quote(config.repoUrl)} ~/repo")
             appendLine("git -C ~/repo fetch -q origin ${shas.joinToString(" ")} || git -C ~/repo fetch -q origin")
             for (sha in shas) {
@@ -426,6 +442,7 @@ class AwsWorker(
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
                 appendLine("(cd $worktree && ./gradlew :klause-cli:installJvmDist :klause-bench:installDist -q --max-workers=${aws.cores})")
             }
+            if (aws.corpusBucket != null) appendLine("wait ${'$'}sync || true")
         }
         val out = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) { host.ssh.run(script, BUILD_TIMEOUT_SEC) }
         log.appendText("[${host.instance}] $out\n")
@@ -433,6 +450,10 @@ class AwsWorker(
     }
 
     private fun shards(jobId: Long, n: Int): List<Set<Int>> = shards(store.cases(jobId), n)
+
+    /** `aws s3 sync` with the instance role, leaving out the bench's staging copies of compressed instances. */
+    private fun s3Sync(from: String, to: String) =
+        "aws s3 sync $from $to --region ${aws.region} --only-show-errors --exclude '.plain/*' --exclude '*/.plain/*'"
 
     private fun <T, R> parallelOn(items: List<T>, block: (T) -> R): List<R> {
         if (items.isEmpty()) return emptyList()
@@ -457,6 +478,8 @@ class AwsWorker(
         curl -fsSL https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse | tar -xz -C /opt/jdk --strip-components=1
         curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz | tar -xz -C /opt/minizinc --strip-components=1
         ln -sf /opt/minizinc/bin/minizinc /usr/local/bin/minizinc
+        curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip
+        unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
         touch /var/lib/klause-ready
     """.trimIndent() + "\n"
 
@@ -476,6 +499,7 @@ class AwsWorker(
         private const val POLL_MS = 10_000L
         private const val SSH_STEP_SEC = 60L
         private const val SHA_LOG = 9
+        private const val S3_PUSH_TIMEOUT_SEC = 3600L
         private const val BUILD_TIMEOUT_SEC = 3600L
         private const val MINUTES_PER_HOUR = 60
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */
