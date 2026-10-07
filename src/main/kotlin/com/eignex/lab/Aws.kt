@@ -376,16 +376,20 @@ class AwsWorker(
                 runner.log(job.id, "${hosts.first().instance}: planning, which fetches the corpora the selections read")
                 runner.plan(job, spec, arms, shas, primary, dir, hosts.first())
             }
-            if (hosts.size > 1) runner.log(job.id, "fetching the corpora on the other instances")
-            // Each instance fetches the corpora its cases read before they start, so cases that share a collection
-            // never fetch it side by side.
-            val selections = spec.problems.map { Experiments.selectArgs(it) }
-            parallelOn(hosts.drop(1)) { host -> selections.forEach { host.select(host.worktree(primary), it) } }
             aws.corpusBucket?.let { bucket ->
-                // Before any case runs, so the upload takes nothing from them.
+                // Right after planning, before the other instances fetch: they then pull what the first fetched from
+                // the bucket instead of each fetching it from its source, and no case is running to slow the upload.
                 runner.log(job.id, "${hosts.first().instance}: pushing newly fetched corpora to s3://$bucket")
                 runCatching { hosts.first().ssh.run(s3Sync("~/corpus", "s3://$bucket/corpus"), S3_PUSH_TIMEOUT_SEC) }
-                    .onFailure { runner.log(job.id, "corpus push failed, the next job fetches upstream: ${it.message}") }
+                    .onFailure { runner.log(job.id, "corpus push failed, the other instances fetch upstream: ${it.message}") }
+            }
+            if (hosts.size > 1) runner.log(job.id, "fetching the corpora on the other instances")
+            // Each instance has the corpora its cases read before they start, so cases that share a collection never
+            // fetch it side by side: from the bucket first, then whatever a selection still lacks.
+            val selections = spec.problems.map { Experiments.selectArgs(it) }
+            parallelOn(hosts.drop(1)) { host ->
+                aws.corpusBucket?.let { bucket -> runCatching { host.ssh.run(s3Sync("s3://$bucket/corpus", "~/corpus"), S3_PUSH_TIMEOUT_SEC) } }
+                selections.forEach { host.select(host.worktree(primary), it) }
             }
             store.setup(job.id, primary)
             val shards = shards(job.id, hosts.size)
