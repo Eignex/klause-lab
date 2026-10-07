@@ -12,6 +12,50 @@ class CompareTest {
         CaseResult(0, Status.DONE, Problem("s", problem), arm, seed, Json.parseToJsonElement(record))
 
     @Test
+    fun `source rejected witnesses receive no comparison credit`() {
+        val record = Json.parseToJsonElement(
+            """{"kind":"optimize","feasible":true,"objective":1.001466,"proven":true,"timeToBestMs":10,
+                "budgetMs":1000,"stats":{"sourceValidation":"invalid","sourceValidationReason":"contradiction"}}""",
+        )
+
+        val checked = requireNotNull(Outcome.of(record))
+
+        assertEquals(0, checked.rank)
+        assertEquals(null, checked.feasible)
+        assertEquals(null, checked.objective)
+        assertEquals(false, checked.proven)
+        assertEquals(1000, checked.timeMs)
+    }
+
+    @Test
+    fun `grid proof claims receive at most checked feasibility credit`() {
+        for (validation in listOf("valid", "unknown")) {
+            val record = Json.parseToJsonElement(
+                """{"kind":"optimize","feasible":true,"objective":1,"proven":true,"budgetMs":1000,
+                    "stats":{"sourceValidation":"$validation","floatApproximation":"true"}}""",
+            )
+
+            val checked = requireNotNull(Outcome.of(record))
+
+            assertEquals(if (validation == "valid") 1 else 0, checked.rank)
+            assertEquals(false, checked.proven)
+        }
+    }
+
+    @Test
+    fun `grid refutations cannot count as source infeasibility`() {
+        val record = Json.parseToJsonElement(
+            """{"feasible":false,"proven":true,"stats":{"floatApproximation":"true"}}""",
+        )
+
+        val checked = requireNotNull(Outcome.of(record))
+
+        assertEquals(0, checked.rank)
+        assertEquals(null, checked.feasible)
+        assertEquals(false, checked.proven)
+    }
+
+    @Test
     fun `a solved outcome beats an unsolved one whatever the time`() {
         assertEquals(1.0, Compare.points(outcome(true, 5.0, timeMs = 900), outcome(null)))
     }

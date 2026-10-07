@@ -356,6 +356,13 @@ private fun verdict(outcome: Outcome?, status: Status): String = when {
     outcome.error -> "<span class=\"FAILED\">error</span>"
     outcome.unsupported != null -> "<span class=\"PARTIAL\" title=\"${esc(outcome.unsupported)}\">unsupported</span>"
     outcome.loadError != null -> "<span class=\"FAILED\" title=\"${esc(outcome.loadError)}\">load error</span>"
+    outcome.sourceValidation == "invalid" ->
+        "<span class=\"FAILED\" title=\"${esc(outcome.sourceValidationReason.orEmpty())}\">invalid solution</span>"
+    outcome.floatApproximation && outcome.sourceValidation != "valid" ->
+        "<span class=\"PARTIAL\" title=\"${esc(outcome.sourceValidationReason.orEmpty())}\">unchecked grid</span>"
+    outcome.floatApproximation && outcome.feasible == true ->
+        "<span title=\"source-checked grid witness; source optimality unproved\">" +
+            (outcome.objective?.let(::number) ?: "sat") + " <small class=\"muted\">grid</small></span>"
     outcome.feasible == false -> "infeasible"
     outcome.feasible == null -> "<span class=\"muted\">unknown</span>"
     outcome.optimize && outcome.objective != null -> number(outcome.objective) + if (outcome.proven) "*" else ""

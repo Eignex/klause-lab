@@ -27,6 +27,9 @@ data class Outcome(
     val loadError: String? = null,
     /** The solver's own `solveTime` statistic, in ms. */
     val solveTimeMs: Long? = null,
+    val sourceValidation: String? = null,
+    val sourceValidationReason: String? = null,
+    val floatApproximation: Boolean = false,
 ) {
     /** Solved beats unsolved, and proven (an optimum, or infeasibility) beats merely solved. */
     val rank: Int get() = when {
@@ -46,17 +49,25 @@ data class Outcome(
         fun of(record: JsonElement?): Outcome? {
             val fields = record as? JsonObject ?: return null
             fun field(name: String) = fields[name]?.takeUnless { it is JsonObject }?.jsonPrimitive
+            val validation = stat(fields, "sourceValidation")
+            val approximation = stat(fields, "floatApproximation") == "true"
+            val reportedFeasible = field("feasible")?.booleanOrNull
+            val rejected = validation == "invalid" ||
+                (approximation && (reportedFeasible == false || (reportedFeasible == true && validation != "valid")))
             return Outcome(
                 optimize = field("kind")?.content == "optimize",
                 maximize = field("maximize")?.booleanOrNull ?: false,
-                feasible = field("feasible")?.booleanOrNull,
-                objective = field("objective")?.doubleOrNull,
-                proven = field("proven")?.booleanOrNull ?: false,
-                timeToBestMs = field("timeToBestMs")?.longOrNull,
+                feasible = if (rejected) null else reportedFeasible,
+                objective = if (rejected) null else field("objective")?.doubleOrNull,
+                proven = !rejected && !approximation && (field("proven")?.booleanOrNull ?: false),
+                timeToBestMs = if (rejected) null else field("timeToBestMs")?.longOrNull,
                 budgetMs = field("budgetMs")?.longOrNull ?: 0,
                 error = field("command")?.content == "ERROR",
                 unsupported = stat(fields, "unsupported"),
                 loadError = stat(fields, "loadError"),
+                sourceValidation = validation,
+                sourceValidationReason = stat(fields, "sourceValidationReason"),
+                floatApproximation = approximation,
                 solveTimeMs = stat(fields, "solveTime")?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
                     ?.let { (it * MS_PER_S).toLong() },
             )
