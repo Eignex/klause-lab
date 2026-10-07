@@ -66,6 +66,8 @@ data class Config(
     val mirror: Path get() = dataDir.resolve("repo.git")
     /** Written by `lab update`: the runner checks for a lab update at once instead of at its interval. */
     val updateRequest: Path get() = dataDir.resolve("update-requested")
+    /** The AWS settings, when `$LAB_DATA/aws/aws.properties` exists: experiments with `"host": "aws"` need them. */
+    val aws: AwsConfig? by lazy { AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) }
     fun jobDir(id: Long): Path = dataDir.resolve("jobs").resolve(id.toString())
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
 }

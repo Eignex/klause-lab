@@ -32,7 +32,7 @@ class Runner(private val config: Config, private val store: Store) {
     @Volatile
     private var stopping = false
 
-    private val lenient = Json { ignoreUnknownKeys = true }
+    internal val lenient = Json { ignoreUnknownKeys = true }
 
     /** Held over every git operation on the shared mirror, which the schedule thread and job setup both touch. */
     private val mirrorLock = Any()
@@ -50,6 +50,9 @@ class Runner(private val config: Config, private val store: Store) {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
+        config.aws?.let { aws ->
+            thread(isDaemon = true, name = "aws") { AwsWorker(this, store, config, aws).loop() }
+        }
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
         // priorities then decide when it runs.
         thread(isDaemon = true, name = "schedules") {
@@ -119,8 +122,14 @@ class Runner(private val config: Config, private val store: Store) {
      * until the count is below it. Before each command it checks whether the job was paused or a higher-priority job
      * waits; then it starts no more and returns once the running ones end, so a job yields only between commands.
      */
-    private fun dispatch(job: Job, dir: Path): Dispatched {
-        val pending = ArrayDeque(job.commands.filter { it.status == Status.QUEUED })
+    internal fun dispatch(
+        job: Job,
+        dir: Path,
+        host: ExecutionHost = LocalHost(job, "", File("/dev/null")),
+        /** The cases this dispatch runs, when a job is split over several hosts; null for all of them. */
+        only: Set<Int>? = null,
+    ): Dispatched {
+        val pending = ArrayDeque(job.commands.filter { it.status == Status.QUEUED && (only == null || it.index in only) })
         val active = LinkedHashMap<Int, Future<Int>>()
         val pool = Executors.newCachedThreadPool()
         var cancelled = false
@@ -142,7 +151,7 @@ class Runner(private val config: Config, private val store: Store) {
                 if (!cancelled && store.cancelRequested(job.id)) cancelled = true
                 if (cancelled) {
                     if (active.isEmpty()) return Dispatched.CANCELLED
-                } else if (yielding || (pending.isNotEmpty() && (store.shouldYield(job.id) || updateDue(job.id)))) {
+                } else if (yielding || (pending.isNotEmpty() && (yields(job.id, host) || host.yieldsToUpdates && updateDue(job.id)))) {
                     yielding = true
                     if (active.isEmpty()) return Dispatched.YIELDED
                 } else {
@@ -150,11 +159,11 @@ class Runner(private val config: Config, private val store: Store) {
                     // left waits for room rather than letting smaller later ones jump it. One case always may run.
                     val limit = store.parallel(job.id).coerceIn(1, config.maxParallel)
                     while (pending.isNotEmpty() && active.size < limit &&
-                        (active.isEmpty() || held(active.keys, job) + pending.first().cores <= config.cores)
+                        (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
                     ) {
                         val command = pending.removeFirst()
                         store.commandStarted(job.id, command.index)
-                        active[command.index] = pool.submit<Int> { run(job, command, dir) }
+                        active[command.index] = pool.submit<Int> { host.run(command, dir) }
                     }
                 }
                 Thread.sleep(DISPATCH_POLL_MS)
@@ -204,6 +213,9 @@ class Runner(private val config: Config, private val store: Store) {
         if (arms.any { it.values["backend"] != REFERENCE_BACKEND }) return null
         return arms.map { it.values["solver"] }.distinct().singleOrNull()
     }
+
+    private fun yields(jobId: Long, host: ExecutionHost): Boolean =
+        if (host.yieldsToPriority) store.shouldYield(jobId) else store.job(jobId)?.paused == true
 
     /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
     private fun updateDue(jobId: Long): Boolean = updater.due().also { if (it) log(jobId, "yielding for a lab update") }
@@ -272,12 +284,7 @@ class Runner(private val config: Config, private val store: Store) {
         val spec = checkNotNull(job.experiment)
         val log = dir.resolve("setup.log").toFile()
         log.writeText("")
-        val planned = store.arms(job.id)
-        val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
-        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(log) } }
-        val shas = synchronized(mirrorLock) {
-            planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
-        }
+        val (arms, shas) = resolveArms(job, spec, log)
         val primary = shas.getValue(arms.first().ref)
         removeWorktree(job.id)
         for (sha in shas.values.distinct()) {
@@ -296,24 +303,34 @@ class Runner(private val config: Config, private val store: Store) {
                     "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
             }
         }
-        if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, log)
+        if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
         dir.resolve("sha").writeAtomically(primary)
         return primary
     }
 
-    private fun plan(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, dir: Path, log: File) {
-        val worktree = experimentWorktree(job.id, primary, primary)
-        val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
+    /** [job]'s arms and the commit each ref names: the ones its plan recorded, or, unplanned, resolved now on the
+     *  freshly fetched mirror. */
+    internal fun resolveArms(job: Job, spec: ExperimentSpec, log: File): Pair<List<Arm>, Map<String, String>> {
+        val planned = store.arms(job.id)
+        val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
+        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(log) } }
+        val shas = synchronized(mirrorLock) {
+            planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
+        }
+        return arms to shas
+    }
+
+    internal fun plan(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, dir: Path, host: ExecutionHost) {
         // Each selection is capped on its own; a problem two selections share is solved once.
         // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
         val budgetMs = arms.maxOf { it.timeoutMs }
-        val problems = spec.problemList.ifEmpty { selectProblems(job, spec, worktree, opts, budgetMs, dir, log) }
+        val problems = spec.problemList.ifEmpty { selectProblems(job, spec, host.worktree(primary), budgetMs, dir, host) }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
-        planCases(job, spec, arms, shas, primary, problems)
+        planCases(job, spec, arms, shas, problems, host)
     }
 
     /** The problems [spec]'s selections pick, each selection asked of the bench at [worktree] and filtered and capped. */
-    private fun selectProblems(job: Job, spec: ExperimentSpec, worktree: Path, opts: String, budgetMs: Long, dir: Path, log: File): List<Problem> =
+    private fun selectProblems(job: Job, spec: ExperimentSpec, worktree: String, budgetMs: Long, dir: Path, host: ExecutionHost): List<Problem> =
         interleave(spec.problems.withIndex().map { (index, problemSelection) ->
             val selection = dir.resolve("selection-$index.jsonl")
             val mode = Experiments.referenceFilter(spec, problemSelection)
@@ -322,12 +339,11 @@ class Runner(private val config: Config, private val store: Store) {
             val refill = Experiments.refills(mode, problemSelection)
             val asked = if (refill) Experiments.uncapped(problemSelection) else problemSelection
             // Selecting can fetch a corpus the cache does not hold yet.
-            withRetry(job.id, "selecting problems for selection $index", config.buildRetry) {
-                sh(log, worktree.resolve("klause-bench").toFile(),
-                    "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
-                        "select ${Experiments.selectArgs(asked)} > ${quote(selection.toString())}")
+            val lines = withRetry(job.id, "selecting problems for selection $index", config.buildRetry) {
+                host.select(worktree, Experiments.selectArgs(asked))
             }
-            val selected = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
+            selection.toFile().writeText(lines.joinToString("\n", postfix = "\n"))
+            val selected = lines.filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
             val references = store.references(selected.map { it.collection to it.problem }, referenceSolver(spec))
             val kept = selected.filter { mode.keeps(references[it.collection to it.problem], budgetMs) }
             val planned = if (refill) Experiments.cap(kept, problemSelection["per-family"]?.toIntOrNull(), problemSelection["max"]?.toIntOrNull()) else kept
@@ -337,22 +353,46 @@ class Runner(private val config: Config, private val store: Store) {
             planned
         }).distinctBy { it.suite to it.problem }
 
-    private fun planCases(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, problems: List<Problem>) {
+    private fun planCases(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, problems: List<Problem>, host: ExecutionHost) {
         val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
         val parallel = spec.parallel ?: config.defaultParallel
-        val hours = Experiments.estimateHours(cases, arms, parallel, config.cores)
+        val hours = Experiments.estimateHours(cases, arms, parallel, host.cores)
         require(spec.confirm || hours <= config.maxExperimentHours) {
             "${cases.size} cases could take %.1f h at ×$parallel, over the ${config.maxExperimentHours} h limit; ".format(hours) +
                 "resubmit with \"confirm\": true"
         }
         val commands = cases.mapIndexed { index, case ->
             val arm = arms[case.arm]
-            val path = experimentWorktree(job.id, shas.getValue(arm.ref), primary)
-            Experiments.command(path.toString(), problems[case.problem], arm, case.seed, index, config.corpusDir.toString()) to
+            Experiments.command(host.worktree(shas.getValue(arm.ref)), problems[case.problem], arm, case.seed, index, host.corpus) to
                 Experiments.caseTimeoutSec(arm) to arm.cores
         }.map { (command, cores) -> CaseCommand(command.first, command.second, cores) }
         store.planCommands(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
         log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
+    }
+
+    /** The lab machine itself: worktrees under the data directory, the shared corpus cache, the lab's core budget. */
+    private inner class LocalHost(private val job: Job, private val primary: String, private val log: File) : ExecutionHost {
+        override val cores get() = config.cores
+        override val corpus get() = config.corpusDir.toString()
+        override val yieldsToUpdates = true
+        override val yieldsToPriority = true
+
+        override fun worktree(sha: String) = experimentWorktree(job.id, sha, primary).toString()
+
+        override fun select(worktree: String, args: String): List<String> {
+            val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
+            val out = Files.createTempFile("select", ".jsonl")
+            try {
+                sh(log, File(worktree, "klause-bench"),
+                    "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
+                        "select $args > ${quote(out.toString())}")
+                return out.toFile().readLines()
+            } finally {
+                Files.deleteIfExists(out)
+            }
+        }
+
+        override fun run(command: Command, dir: Path): Int = this@Runner.run(job, command, dir)
     }
 
     /** The worktree an experiment builds [sha] in: the job's own for its first arm's commit, a sibling for others. */
@@ -360,7 +400,7 @@ class Runner(private val config: Config, private val store: Store) {
         if (sha == primary) config.worktree(jobId) else config.worktree(jobId).resolveSibling("$jobId@${sha.take(SHA_DIR_LENGTH)}")
 
     /** Keep the record a finished case wrote; a case that wrote none (it could not run) keeps none. */
-    private fun keepRecord(jobId: Long, index: Int, dir: Path) {
+    internal fun keepRecord(jobId: Long, index: Int, dir: Path) {
         val record = dir.resolve(CASES).resolve(index.toString()).toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()
         runCatching {
             val text = record?.readText() ?: return@runCatching
@@ -508,7 +548,7 @@ class Runner(private val config: Config, private val store: Store) {
         )
     }
 
-    private fun cancel(jobId: Long) {
+    internal fun cancel(jobId: Long) {
         store.cancelRemaining(jobId)
         store.finish(jobId, Status.CANCELLED)
         removeWorktree(jobId)
@@ -542,7 +582,7 @@ class Runner(private val config: Config, private val store: Store) {
      * Run [step] by [backoff], logging each retry to job [jobId] (or the console without one). The wait stops for a
      * shutdown, as a running step does, and gives up early when the job's cancel is requested.
      */
-    private fun <T> withRetry(jobId: Long?, what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
+    internal fun <T> withRetry(jobId: Long?, what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
         backoff,
         onRetry = { attempt, waitMs, e ->
             val message = "$what failed (try $attempt of ${backoff.attempts}), retrying in ${waitMs / MS_PER_SEC} s: ${e.message}"
@@ -594,7 +634,7 @@ class Runner(private val config: Config, private val store: Store) {
         process.waitFor(KILL_WAIT_SEC, TimeUnit.SECONDS)
     }
 
-    private fun log(jobId: Long, message: String) {
+    internal fun log(jobId: Long, message: String) {
         println("[job $jobId] $message")
         runCatching { config.jobDir(jobId).createDirectories().resolve("job.log").toFile().appendText("${now()} $message\n") }
     }
@@ -666,4 +706,4 @@ internal fun Path.writeAtomically(text: String) {
     Files.move(temp, this, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
 }
 
-private enum class Dispatched { FINISHED, CANCELLED, YIELDED }
+internal enum class Dispatched { FINISHED, CANCELLED, YIELDED }

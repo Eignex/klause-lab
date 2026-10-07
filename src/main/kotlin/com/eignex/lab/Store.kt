@@ -372,16 +372,20 @@ class Store(file: Path) {
      * waited. A series is a schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
      */
     @Synchronized
-    fun next(): Job? = transaction {
+    fun next(host: String = Experiments.LAB_HOST): Job? = transaction {
         // SQLite sorts NULL first ascending: a series that never finished a run goes before one that has.
-        val running = connection.prepareStatement("SELECT id FROM jobs WHERE status = ? ORDER BY id LIMIT 1").use {
+        val running = if (host != Experiments.LAB_HOST) null else connection.prepareStatement(
+            "SELECT id FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1",
+        ).use {
             it.setString(1, Status.RUNNING.name)
+            it.setString(2, host)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
         val id = running ?: connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $QUEUE_ORDER LIMIT 1",
+            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER LIMIT 1",
         ).use {
             it.setString(1, Status.QUEUED.name)
+            it.setString(2, host)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }?.also { claimed ->
             connection.prepareStatement(
@@ -699,20 +703,23 @@ class Store(file: Path) {
     @Synchronized
     fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
         "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE status = ? " +
-            "AND cancel_requested = 0 AND paused = 0 AND priority > (SELECT priority FROM jobs WHERE id = ?))",
+            "AND cancel_requested = 0 AND paused = 0 AND $HOST = (SELECT $HOST FROM jobs WHERE id = ?) " +
+            "AND priority > (SELECT priority FROM jobs WHERE id = ?))",
     ).use {
         it.setLong(1, jobId)
         it.setString(2, Status.QUEUED.name)
         it.setLong(3, jobId)
+        it.setLong(4, jobId)
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
-    /** The queued, unpaused jobs in the order [next] takes them. */
+    /** The queued, unpaused jobs for [host] in the order [next] takes them. */
     @Synchronized
-    fun queueOrder(): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $QUEUE_ORDER",
+    fun queueOrder(host: String = Experiments.LAB_HOST): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER",
     ).use {
         it.setString(1, Status.QUEUED.name)
+        it.setString(2, host)
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
     }
 
@@ -840,3 +847,6 @@ private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.nam
 /** How [Store.next] orders queued jobs: by priority, then the series that last finished a run longest ago, then age. */
 private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
     "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
+
+/** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
+private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"

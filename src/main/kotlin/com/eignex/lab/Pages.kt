@@ -75,6 +75,9 @@ internal fun jobPage(
     if (job.startedAt != null) append("<dt>started</dt><dd>${ago(job.startedAt)}</dd>")
     if (job.finishedAt != null) append("<dt>finished</dt><dd>${ago(job.finishedAt)}</dd>")
     append("<dt>elapsed</dt><dd>${elapsed(job)}</dd>")
+    job.experiment?.takeIf { it.host == Experiments.AWS_HOST }?.let {
+        append("<dt>host</dt><dd>AWS${it.machines?.let { m -> ", $m instances" } ?: ""}, each running ${job.parallel} at once</dd>")
+    }
     append("<dt>parallel</dt><dd>${job.parallel}</dd><dt>priority</dt><dd>${job.priority}</dd>")
     append("<dt>files</dt><dd><a href=\"/jobs/${job.id}/files\">all files</a>")
     for (log in listOf("setup.log", "job.log")) {

@@ -38,6 +38,10 @@ data class ExperimentSpec(
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
+    /** Where the cases run: `lab`, the lab machine, or `aws`, EC2 instances the lab launches for the job. */
+    val host: String = Experiments.LAB_HOST,
+    /** For `aws`: how many instances to split the job over, by problem; unset, as many as are free. */
+    val machines: Int? = null,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
@@ -69,6 +73,8 @@ data class Problem(
 data class Case(val problem: Int, val arm: Int, val seed: Long?, val repeat: Int = 0)
 
 object Experiments {
+    const val LAB_HOST = "lab"
+    const val AWS_HOST = "aws"
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
      * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule
@@ -83,6 +89,7 @@ object Experiments {
             configs = spec.configs.map { it.toSortedMap() },
             grid = spec.grid.toSortedMap(),
             parallel = null,
+            machines = null,
             priority = 0,
             confirm = false,
         )

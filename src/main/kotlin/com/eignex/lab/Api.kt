@@ -92,7 +92,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/experiments") {
             val spec = call.receive<ExperimentSpec>()
             requireDescription(spec)
-            Experiments.validate(spec, config.maxParallel, config.cores)
+            requireHost(spec, config)
+            Experiments.validate(spec, config.maxParallel, if (spec.host == Experiments.AWS_HOST) config.aws!!.cores else config.cores)
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
@@ -328,6 +329,21 @@ private const val MAX_COMPARED = 6
 /** The worktrees job [id] built, its own and those of its other commits; the mirror forgets them at its next prune. */
 private fun worktrees(config: Config, id: Long): List<File> =
     config.worktree(id).toFile().parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList()
+
+/** An AWS experiment needs the lab's AWS settings, runs klause only, and fits its instances. */
+private fun requireHost(spec: ExperimentSpec, config: Config) {
+    require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST)) { "host must be lab or aws" }
+    if (spec.host != Experiments.AWS_HOST) {
+        require(spec.machines == null) { "machines is for host aws" }
+        return
+    }
+    val aws = requireNotNull(config.aws) { "the lab has no AWS settings: run deploy/aws-setup.sh" }
+    require(Experiments.arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
+        "reference runs stay on the lab machine, which has the reference solvers"
+    }
+    require(spec.problemList.isEmpty()) { "an AWS experiment selects its problems" }
+    spec.machines?.let { require(it in 1..aws.maxInstances) { "machines must be between 1 and ${aws.maxInstances}" } }
+}
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */
 private fun requireDescription(spec: ExperimentSpec) = require(spec.description.isNotBlank()) {

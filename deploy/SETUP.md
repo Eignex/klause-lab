@@ -47,6 +47,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
+- `host`: `lab` (default) or `aws` (see Running on AWS), and for `aws`, `machines`: how many instances to split it over.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
@@ -170,6 +171,30 @@ runs per day: `klause-reference-ls.json` (local search only), `klause-reference-
 solvers (HiGHS, kissat, Chuffed, cvc5) over the problems each has no verdict on. Change
 a schedule by editing its file and running `lab reschedule`. A schedule's phase is its last check: the runner checks
 it again one interval later, so staggered schedules stay a day apart; `lab reschedule <id> - - <hours>` moves one.
+
+## Running on AWS
+
+An experiment with `"host": "aws"` runs on EC2 instances the lab launches for it, on demand: nothing runs on AWS while
+no such job is queued. Only klause arms go there; reference runs stay on the Mac, which has the reference solvers.
+
+- One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
+  creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
+  launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
+  It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
+  `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` 5, `cores` 4, `maxHours` 24,
+  the MiniZinc version). The lab reads that file; `lab update` restarts the runner to start the AWS worker.
+- The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
+  claims the next `aws` job while instances are free and gives it `machines` of them (default: all free ones, at most
+  `maxInstances` over every job), each job on its own thread.
+- A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
+  It plans on the first, and the others fetch the same corpora before cases start. The cases are split by problem: a
+  problem's arms, seeds and repeats all run on one instance, so each comparison is made on one machine, the problems
+  dealt round-robin. Each instance runs `parallel` cases at once (default `cores`, one per physical core) over SSH under
+  `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
+  local job.
+- The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
+  ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
+  `aws` job left running and terminates every lab-tagged instance no running job owns.
 
 ## Crash safety
 
