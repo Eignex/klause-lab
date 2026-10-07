@@ -171,7 +171,10 @@ object Stats {
 
     private fun key(case: CaseResult) = case.seed to case.repeat
 
-    private fun par2(outcome: Outcome): Double = if (outcome.rank > 0) outcome.timeMs.toDouble() else 2.0 * outcome.budgetMs
+    /** PAR-2 time, at least [MIN_TIME_MS]: a proof made in presolve reports 0 s, and a ratio of two of them, or of one
+     *  and any time, is no measure of speed, only of the clock's resolution. */
+    private fun par2(outcome: Outcome): Double =
+        if (outcome.rank > 0) maxOf(outcome.timeMs.toDouble(), MIN_TIME_MS) else 2.0 * outcome.budgetMs
 
     private fun stdev(values: List<Double>): Double {
         val mean = values.average()
@@ -195,6 +198,7 @@ object Stats {
     private const val LOW = 0.025
     private const val HIGH = 0.975
     private const val MS_PER_S = 1000.0
+    private const val MIN_TIME_MS = 10.0
     /** A coefficient of variation of time-to-best above this marks a problem as noisy. */
     private const val NOISY_SPREAD = 0.25
 }

@@ -41,6 +41,15 @@ class StatsTest {
     }
 
     @Test
+    fun `a problem both arms decide in zero time keeps the time ratio finite`() {
+        val cases = listOf(case("a", 0, 0), case("b", 0, 0), case("a", 1, 100), case("b", 1, 200))
+
+        val ratio = Stats.of(listOf("a", "b"), cases).paired.single().timeRatio
+
+        assertTrue(listOf(ratio.value, ratio.low, ratio.high).all { it.isFinite() }, "ratio=$ratio")
+    }
+
+    @Test
     fun `problems neither arm solved do not enter the time ratio`() {
         val cases = listOf(case("a", 0, 100), case("b", 0, 200), case("a", 1, null), case("b", 1, null))
 
