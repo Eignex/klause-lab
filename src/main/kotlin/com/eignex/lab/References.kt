@@ -225,5 +225,27 @@ object References {
         return ReferenceComparison(summaries, disagreements.distinctBy { it.problem to it.reason }, shortfalls.sortedByDescending { it.gap })
     }
 
+    /**
+     * How the verdicts of several reference solvers on one problem contradict each other: one proving infeasible what
+     * another solved, two proven optima that differ, or a solution beyond another solver's proven optimum. Any of
+     * them means one of the solvers is wrong, so neither verdict is to be trusted until it is settled.
+     */
+    fun conflicts(rows: List<Reference>): List<String> = buildList {
+        for (a in rows) {
+            for (b in rows.filter { it.solver != a.solver }) {
+                if (a.feasible == false && a.proven && b.feasible == true) add("${a.solver} proves infeasible, ${b.solver} found a solution")
+                val (x, y) = a.objective to b.objective
+                if (a.solver < b.solver && a.proven && b.proven && x != null && y != null && x != y) {
+                    add("${a.solver} proves optimum ${fmt(x)}, ${b.solver} proves ${fmt(y)}")
+                }
+                if (a.proven && x != null && !b.proven && y != null && (if (a.maximize) y > x else y < x)) {
+                    add("${b.solver}'s solution ${fmt(y)} beats ${a.solver}'s proven optimum ${fmt(x)}")
+                }
+            }
+        }
+    }.distinct()
+
+    private fun fmt(x: Double) = if (x == Math.rint(x) && abs(x) < 1e15) x.toLong().toString() else x.toString()
+
     private fun abs(x: Double) = kotlin.math.abs(x)
 }

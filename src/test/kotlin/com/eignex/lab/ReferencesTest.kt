@@ -47,6 +47,19 @@ class ReferencesTest {
     }
 
     @Test
+    fun `two reference solvers that contradict each other are a conflict, and agreeing ones are not`() {
+        val unsat = Reference("clasp", false, null, false, true, 10, 60_000)
+        val sat = Reference("kissat", false, null, true, true, 10, 60_000)
+        val optimum = Reference("scip", false, 10.0, true, true, 10, 60_000)
+
+        assertEquals(listOf("clasp proves infeasible, kissat found a solution"), References.conflicts(listOf(unsat, sat)))
+        assertEquals(listOf("highs proves optimum 9, scip proves 10"), References.conflicts(listOf(optimum, optimum.copy(solver = "highs", objective = 9.0))))
+        assertEquals(listOf("highs's solution 8 beats scip's proven optimum 10"),
+            References.conflicts(listOf(optimum, optimum.copy(solver = "highs", objective = 8.0, proven = false))))
+        assertEquals(emptyList(), References.conflicts(listOf(optimum, optimum.copy(solver = "highs"))))
+    }
+
+    @Test
     fun `a filter keeps the rows of its solver and verdict, and counts them all`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         store.putReferences(

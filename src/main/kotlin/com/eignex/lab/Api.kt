@@ -129,7 +129,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             )
             val (found, total) = if (filter.isEmpty) emptyList<Pair<Pair<String, String>, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
             if (call.wantsHtml()) {
-                val page = referencesPage(store.referenceCoverage(), filter, found, total)
+                val page = referencesPage(store.referenceCoverage(), filter, found, total, store.referenceConflicts())
                 call.respondText(page, ContentType.Text.Html)
             } else {
                 call.respond(found.map { (key, r) -> ReferenceHit(key.first, key.second, r) })

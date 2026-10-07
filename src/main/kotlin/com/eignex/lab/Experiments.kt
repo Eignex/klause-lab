@@ -246,7 +246,7 @@ object Experiments {
     private const val REFERENCE_KEY = "reference"
     private const val UNCAPPED = 1_000_000
     private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
-    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "engine", "processors", "lp", "presolve", "fixed", "exact")
+    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact")
     private const val CASE_OVERHEAD_SEC = 120L
     private const val FINGERPRINT_BYTES = 6
     private const val MAX_REPEATS = 100

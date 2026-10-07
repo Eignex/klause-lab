@@ -593,15 +593,32 @@ class Store(file: Path) {
 
     /** The strongest reference row of each of [keys] that has any, keyed by (collection, problem). */
     @Synchronized
-    fun references(keys: Collection<Pair<String, String>>): Map<Pair<String, String>, Reference> =
-        connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ?").use { statement ->
+    fun references(keys: Collection<Pair<String, String>>, solver: String? = null): Map<Pair<String, String>, Reference> =
+        connection.prepareStatement(
+            "SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND (? IS NULL OR solver = ?)",
+        ).use { statement ->
             keys.distinct().mapNotNull { key ->
                 statement.setString(1, key.first)
                 statement.setString(2, key.second)
+                statement.setString(3, solver)
+                statement.setString(4, solver)
                 val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
                 rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
             }.toMap()
         }
+
+    /** Every problem two reference solvers contradict each other on, with why ([References.conflicts]). */
+    @Synchronized
+    fun referenceConflicts(): List<Disagreement> = connection.prepareStatement(
+        "SELECT * FROM reference_rows WHERE (collection, problem) IN " +
+            "(SELECT collection, problem FROM reference_rows GROUP BY collection, problem HAVING COUNT(*) > 1)",
+    ).use { statement ->
+        statement.executeQuery().use { r ->
+            generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
+        }
+    }.groupBy({ it.first }, { it.second }).flatMap { (key, rows) ->
+        References.conflicts(rows).map { Disagreement(Problem("", key.second, collection = key.first), it) }
+    }
 
     /** Per collection and solver: rows, decided, proven, infeasible, and when last updated. */
     @Synchronized

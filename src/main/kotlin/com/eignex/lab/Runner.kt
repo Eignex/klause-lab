@@ -197,6 +197,14 @@ class Runner(private val config: Config, private val store: Store) {
         return store.cases(jobId).filter { it.arm == label }
     }
 
+    /** The one reference solver every arm of a reference run names, whose own results its filter then reads: a
+     *  second solver's `missing` is the problems that solver has no result for, whatever the first one has. */
+    private fun referenceSolver(spec: ExperimentSpec): String? {
+        val arms = Experiments.arms(spec)
+        if (arms.any { it.values["backend"] != REFERENCE_BACKEND }) return null
+        return arms.map { it.values["solver"] }.distinct().singleOrNull()
+    }
+
     /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
     private fun updateDue(jobId: Long): Boolean = updater.due().also { if (it) log(jobId, "yielding for a lab update") }
 
@@ -320,7 +328,7 @@ class Runner(private val config: Config, private val store: Store) {
                         "select ${Experiments.selectArgs(asked)} > ${quote(selection.toString())}")
             }
             val selected = selection.toFile().readLines().filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
-            val references = store.references(selected.map { it.collection to it.problem })
+            val references = store.references(selected.map { it.collection to it.problem }, referenceSolver(spec))
             val kept = selected.filter { mode.keeps(references[it.collection to it.problem], budgetMs) }
             val planned = if (refill) Experiments.cap(kept, problemSelection["per-family"]?.toIntOrNull(), problemSelection["max"]?.toIntOrNull()) else kept
             log(job.id, "selection $index (${Experiments.selectArgs(problemSelection)}, reference=${mode.name.lowercase()}): " +

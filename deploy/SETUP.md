@@ -99,6 +99,13 @@ to the reference results as it finishes, keyed by collection and problem; a stro
 `{"problems": {"suite": "satlib"}, "base": {"backend": "reference", "timeout": "60000"}}` fills in clasp's verdicts
 on all of SATLIB.
 
+An arm can name which reference solver runs with `solver`: `kissat` beside clasp for CNF, `cvc5` beside z3 for
+SMT-LIB, `highs` beside SCIP for MPS, or any MiniZinc solver such as `chuffed` beside cp-sat. When every arm names the
+same solver, a selection's `reference` filter reads only that solver's results, so `"reference": "missing"` with
+`"solver": "highs"` solves the problems HiGHS has no verdict on, whatever SCIP has. Problems where two reference
+solvers contradict each other (one proving infeasible what another solved, different proven optima, or a solution
+beyond another's proven optimum) are listed on the Reference tab: one of them is wrong.
+
 Results are kept per (collection, problem, solver); a new one replaces a stored one only when it is stronger (decided
 over undecided, proven over unproven, then the better objective, then the bigger budget), so no proof is lost. `lab references <text> [solver]
 [verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page

@@ -695,6 +695,8 @@ internal fun referencesPage(
     filter: ReferenceFilter,
     found: List<Pair<Pair<String, String>, Reference>>,
     total: Int,
+    /** Problems two reference solvers contradict each other on. */
+    conflicts: List<Disagreement> = emptyList(),
 ): String = buildString {
     val visible = coverage.filter { c -> HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) } }
     append(head("reference · klause lab", live = false, tab = Tab.REFERENCE))
@@ -719,6 +721,15 @@ internal fun referencesPage(
             append("<td class=\"num\">${"%.2f".format(r.elapsedMs / 1000.0)}s</td><td class=\"num\">${r.budgetMs / 1000}s</td></tr>")
         }
         append("</table></div>")
+    }
+    if (conflicts.isNotEmpty()) {
+        append("<h2 class=\"FAILED\">Solvers disagree <small>${conflicts.size} problems where two reference solvers ")
+        append("contradict each other: one of them is wrong</small></h2><ul class=\"error\">")
+        for (d in conflicts) {
+            append("<li><a class=\"plain\" href=\"${problemLink(d.problem.collection, d.problem.problem)}\">")
+            append("<code>${esc(d.problem.collection)}/${esc(d.problem.problem)}</code></a>: ${esc(d.reason)}</li>")
+        }
+        append("</ul>")
     }
     val shown = visible.filter { c ->
         (filter.solver == null || c.solver == filter.solver) && (filter.collection == null || c.collection == filter.collection)
