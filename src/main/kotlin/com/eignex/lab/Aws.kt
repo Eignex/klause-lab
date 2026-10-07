@@ -466,7 +466,11 @@ class AwsWorker(
             val bucket = aws.corpusBucket
             // Gradle's caches (dependencies, the wrapper's distribution) come from one archive in the bucket, so a
             // fresh instance downloads nothing from Maven Central or the Gradle site.
-            if (bucket != null) appendLine("aws s3 cp s3://$bucket/$GRADLE_ARCHIVE - --region ${aws.region} 2>/dev/null | zstd -dcq | tar -x -C ~ || true")
+            if (bucket != null) {
+                appendLine("if aws s3 ls s3://$bucket/$GRADLE_ARCHIVE --region ${aws.region} >/dev/null 2>&1; then")
+                appendLine("  aws s3 cp s3://$bucket/$GRADLE_ARCHIVE - --region ${aws.region} | zstd -dcq | tar -x -C ~ || true")
+                appendLine("fi")
+            }
             appendLine("built=0")
             for (sha in shas) {
                 val worktree = host.worktree(sha)
@@ -477,7 +481,10 @@ class AwsWorker(
                 } else {
                     // A commit's built distributions are kept by commit: a commit any instance built before is not built again.
                     val archive = "s3://$bucket/builds/$sha.tar.zst"
-                    appendLine("if aws s3 cp $archive - --region ${aws.region} 2>/dev/null | zstd -dcq | tar -x -C $worktree; then echo 'reused the build of ${sha.take(SHA_LOG)}'; else")
+                    appendLine("if aws s3 ls $archive --region ${aws.region} >/dev/null 2>&1 && aws s3 cp $archive - --region ${aws.region} | zstd -dcq | tar -x -C $worktree; then")
+                    appendLine("  echo 'reused the cached build of ${sha.take(SHA_LOG)}'")
+                    appendLine("else")
+                    appendLine("  echo '${sha.take(SHA_LOG)} is not cached: building'")
                     appendLine("  $build && built=1")
                     appendLine("  tar -C $worktree -c klause-cli/build/install klause-bench/build/install | zstd -q -T0 | aws s3 cp - $archive --region ${aws.region} --only-show-errors || true")
                     appendLine("fi")
