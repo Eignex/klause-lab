@@ -188,6 +188,9 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   syncs it down while it builds (fast and free within the region) and, after planning, pushes back any collection it
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
   the role `klause-lab-instance`, which may read and write only that bucket.
+- The bucket also holds Gradle's dependency cache and wrapper distribution as one archive, restored before every build
+  and refreshed after one, and each commit's built distributions (`builds/<sha>.tar.zst`): an instance that finds its
+  commit there unpacks it instead of building, so a commit is built once across every job and instance.
 - The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
   claims the next `aws` job while instances are free and gives it `machines` of them (default: all free ones, at most
   `maxInstances` over every job), each job on its own thread.

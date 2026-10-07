@@ -437,12 +437,30 @@ class AwsWorker(
             aws.corpusBucket?.let { appendLine("(${s3Sync("s3://$it/corpus", "~/corpus")} || true) > ~/corpus-sync.log 2>&1 & sync=${'$'}!") }
             appendLine("[ -d ~/repo/.git ] || git clone -q --filter=blob:none --no-checkout ${quote(config.repoUrl)} ~/repo")
             appendLine("git -C ~/repo fetch -q origin ${shas.joinToString(" ")} || git -C ~/repo fetch -q origin")
+            val bucket = aws.corpusBucket
+            // Gradle's caches (dependencies, the wrapper's distribution) come from one archive in the bucket, so a
+            // fresh instance downloads nothing from Maven Central or the Gradle site.
+            if (bucket != null) appendLine("aws s3 cp s3://$bucket/$GRADLE_ARCHIVE - --region ${aws.region} 2>/dev/null | zstd -dcq | tar -x -C ~ || true")
+            appendLine("built=0")
             for (sha in shas) {
                 val worktree = host.worktree(sha)
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
-                appendLine("(cd $worktree && ./gradlew :klause-cli:installJvmDist :klause-bench:installDist -q --max-workers=${aws.cores})")
+                val build = "(cd $worktree && ./gradlew :klause-cli:installJvmDist :klause-bench:installDist -q --max-workers=${aws.cores})"
+                if (bucket == null) {
+                    appendLine(build)
+                } else {
+                    // A commit's built distributions are kept by commit: a commit any instance built before is not built again.
+                    val archive = "s3://$bucket/builds/$sha.tar.zst"
+                    appendLine("if aws s3 cp $archive - --region ${aws.region} 2>/dev/null | zstd -dcq | tar -x -C $worktree; then echo 'reused the build of ${sha.take(SHA_LOG)}'; else")
+                    appendLine("  $build && built=1")
+                    appendLine("  tar -C $worktree -c klause-cli/build/install klause-bench/build/install | zstd -q -T0 | aws s3 cp - $archive --region ${aws.region} --only-show-errors || true")
+                    appendLine("fi")
+                }
             }
-            if (aws.corpusBucket != null) appendLine("wait ${'$'}sync || true")
+            if (bucket != null) {
+                appendLine("if [ ${'$'}built = 1 ]; then tar -C ~ -c .gradle/caches/modules-2 .gradle/wrapper 2>/dev/null | zstd -q -T0 | aws s3 cp - s3://$bucket/$GRADLE_ARCHIVE --region ${aws.region} --only-show-errors || true; fi")
+                appendLine("wait ${'$'}sync || true")
+            }
         }
         val out = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) { host.ssh.run(script, BUILD_TIMEOUT_SEC) }
         log.appendText("[${host.instance}] $out\n")
@@ -500,6 +518,8 @@ class AwsWorker(
         private const val SSH_STEP_SEC = 60L
         private const val SHA_LOG = 9
         private const val S3_PUSH_TIMEOUT_SEC = 3600L
+        /** Gradle's dependency cache and wrapper distribution, as one archive in the corpus bucket. */
+        private const val GRADLE_ARCHIVE = "gradle/home.tar.zst"
         private const val BUILD_TIMEOUT_SEC = 3600L
         private const val MINUTES_PER_HOUR = 60
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */
