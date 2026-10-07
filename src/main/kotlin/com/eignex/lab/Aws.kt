@@ -348,7 +348,11 @@ class AwsWorker(
             val primary = shas.getValue(arms.first().ref)
             val hosts = launch(job, machines, instances)
             parallelOn(hosts) { host -> setup(job, host, shas.values.distinct(), log) }
-            if (job.commands.isEmpty()) runner.plan(job, spec, arms, shas, primary, dir, hosts.first())
+            if (job.commands.isEmpty()) {
+                runner.log(job.id, "${hosts.first().instance}: planning, which fetches the corpora the selections read")
+                runner.plan(job, spec, arms, shas, primary, dir, hosts.first())
+            }
+            if (hosts.size > 1) runner.log(job.id, "fetching the corpora on the other instances")
             // Each instance fetches the corpora its cases read before they start, so cases that share a collection
             // never fetch it side by side.
             val selections = spec.problems.map { Experiments.selectArgs(it) }
@@ -411,6 +415,7 @@ class AwsWorker(
         runner.withRetry(job.id, "waiting for ${host.instance} to boot", BOOT_WAIT) {
             host.ssh.run("test -f /var/lib/klause-ready", SSH_STEP_SEC)
         }
+        runner.log(job.id, "${host.instance}: booted; building ${shas.joinToString { it.take(SHA_LOG) }}")
         val script = buildString {
             appendLine("set -euo pipefail; ${AwsHost.ENV}")
             appendLine("mkdir -p ~/work ~/job/cases ~/corpus")
@@ -424,6 +429,7 @@ class AwsWorker(
         }
         val out = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) { host.ssh.run(script, BUILD_TIMEOUT_SEC) }
         log.appendText("[${host.instance}] $out\n")
+        runner.log(job.id, "${host.instance}: built")
     }
 
     private fun shards(jobId: Long, n: Int): List<Set<Int>> = shards(store.cases(jobId), n)
@@ -469,6 +475,7 @@ class AwsWorker(
 
         private const val POLL_MS = 10_000L
         private const val SSH_STEP_SEC = 60L
+        private const val SHA_LOG = 9
         private const val BUILD_TIMEOUT_SEC = 3600L
         private const val MINUTES_PER_HOUR = 60
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */
