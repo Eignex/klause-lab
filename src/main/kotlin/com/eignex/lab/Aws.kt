@@ -133,7 +133,7 @@ class AwsCli(private val aws: AwsConfig) {
         const val UBUNTU_IMAGE = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
         const val TAG = "klause-lab"
         const val JOB_TAG = "klause-lab-job"
-        const val VOLUME_GB = 60
+        const val VOLUME_GB = 100
         const val ERROR_CHARS = 2000
     }
 }
@@ -379,8 +379,13 @@ class AwsWorker(
             aws.corpusBucket?.let { bucket ->
                 // Right after planning, before the other instances fetch: they then pull what the first fetched from
                 // the bucket instead of each fetching it from its source, and no case is running to slow the upload.
-                runner.log(job.id, "${hosts.first().instance}: pushing newly fetched corpora to s3://$bucket")
-                runCatching { hosts.first().ssh.run(s3Sync("~/corpus", "s3://$bucket/corpus"), S3_PUSH_TIMEOUT_SEC) }
+                runner.log(job.id, "${hosts.first().instance}: compressing and pushing newly fetched corpora to s3://$bucket")
+                // A collection fetched from its source is plain text, many times its compressed size: compressed as the
+                // bench stores it, it takes less of the bucket, of every instance's disk and of every sync.
+                val bench = "${hosts.first().worktree(primary)}/klause-bench"
+                val compress = "${AwsHost.ENV}; cd ${quote(bench)} && JAVA_OPTS='-Dklause.workspace.root=${hosts.first().worktree(primary)}' " +
+                    "./build/install/klause-bench/bin/klause-bench corpus compress ~/corpus > ~/corpus-compress.log 2>&1"
+                runCatching { hosts.first().ssh.run("$compress; ${s3Sync("~/corpus", "s3://$bucket/corpus")}", S3_PUSH_TIMEOUT_SEC) }
                     .onFailure { runner.log(job.id, "corpus push failed, the other instances fetch upstream: ${it.message}") }
             }
             if (hosts.size > 1) runner.log(job.id, "fetching the corpora on the other instances")
