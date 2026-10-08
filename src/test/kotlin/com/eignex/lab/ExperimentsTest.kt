@@ -8,8 +8,86 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import java.nio.file.Files
 
 class ExperimentsTest {
+    @Test
+    fun `setup captures manifests for supported revisions and keeps older revisions runnable`() {
+        for (supported in listOf(true, false)) {
+            val root = Files.createTempDirectory("provenance path ").toFile()
+            try {
+                val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
+                bench.parentFile.mkdirs()
+                val help = if (supported) "bench provenance out=<file>" else "bench solve-one"
+                bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo '$help';; provenance) pwd > \"\${2#out=}\";; esac\n")
+                bench.setExecutable(true)
+
+                val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path))
+                    .redirectErrorStream(true).start()
+                process.inputStream.bufferedReader().readText()
+                val exit = process.waitFor()
+
+                assertEquals(0, exit)
+                assertEquals(supported, root.resolve("klause-bench/build/provenance.json").exists())
+                if (supported) {
+                    assertEquals(root.resolve("klause-bench").path,
+                        root.resolve("klause-bench/build/provenance.json").readText().trim())
+                }
+            } finally {
+                root.deleteRecursively()
+            }
+        }
+    }
+
+    @Test
+    fun `case commands select their manifest and clear stale inherited paths for older revisions`() {
+        for (captured in listOf(true, false)) {
+            val root = Files.createTempDirectory("case provenance ").toFile()
+            try {
+                val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
+                bench.parentFile.mkdirs()
+                bench.writeText("#!/bin/sh\nprintf '%s' \"\${KLAUSE_BENCH_PROVENANCE-unset}\" > \"\$RECORDED\"\n")
+                bench.setExecutable(true)
+                val manifest = root.resolve("klause-bench/build/provenance.json")
+                if (captured) manifest.writeText("{}")
+                val recorded = root.resolve("environment.txt")
+                val command = Experiments.command(root.path, Problem("s", "p"), Arm("a", emptyMap()), null, 0, "/corpus")
+                val builder = ProcessBuilder("bash", "-c", command).redirectErrorStream(true)
+                builder.environment().putAll(mapOf("KLAUSE_BENCH_PROVENANCE" to "/stale",
+                    "JOB_DIR" to root.path, "RECORDED" to recorded.path))
+
+                val process = builder.start()
+                process.inputStream.bufferedReader().readText()
+                val exit = process.waitFor()
+
+                assertEquals(0, exit)
+                assertEquals(if (captured) manifest.path else "unset", recorded.readText())
+            } finally {
+                root.deleteRecursively()
+            }
+        }
+    }
+
+    @Test
+    fun `a failed manifest capture fails setup`() {
+        val root = Files.createTempDirectory("provenance failure").toFile()
+        try {
+            val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
+            bench.parentFile.mkdirs()
+            bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo 'bench provenance out=<file>';; provenance) exit 7;; esac\n")
+            bench.setExecutable(true)
+
+            val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path))
+                .redirectErrorStream(true).start()
+            process.inputStream.bufferedReader().readText()
+            val exit = process.waitFor()
+
+            assertEquals(7, exit)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test
     fun `exact policy is validated and forwarded to each case`() {
         for (exact in listOf("true", "false")) {

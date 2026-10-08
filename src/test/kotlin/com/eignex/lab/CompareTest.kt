@@ -12,6 +12,22 @@ class CompareTest {
         CaseResult(0, Status.DONE, Problem("s", problem), arm, seed, Json.parseToJsonElement(record))
 
     @Test
+    fun `arm summaries retain mixed build and policy identities with missing legacy records`() {
+        val cases = listOf(
+            case("a", "p1", """{"buildFingerprint":"b","validationPolicy":"source-v1"}"""),
+            case("a", "p2", """{"buildFingerprint":"a","validationPolicy":"reported-v1"}"""),
+            case("a", "p3", """{}"""),
+            case("b", "p4", """{"buildFingerprint":"other","validationPolicy":"other"}"""),
+        )
+
+        val summary = Compare.compare(listOf("a", "b"), cases).arms.first()
+
+        assertEquals(listOf("a", "b"), summary.buildFingerprints)
+        assertEquals(listOf("reported-v1", "source-v1"), summary.validationPolicies)
+        assertEquals(1, summary.missingProvenance)
+    }
+
+    @Test
     fun `source rejected witnesses receive no comparison credit`() {
         val record = Json.parseToJsonElement(
             """{"kind":"optimize","feasible":true,"objective":1.001466,"proven":true,"timeToBestMs":10,

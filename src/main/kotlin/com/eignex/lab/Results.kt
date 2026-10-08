@@ -13,7 +13,7 @@ object Results {
     fun casesCsv(cases: List<CaseResult>): String = buildString {
         appendLine(
             "index,status,arm,seed,repeat,suite,problem,collection,family,format,kind,maximize,feasible,objective,proven," +
-                "timeToBestMs,timeToFirstFeasibleMs,solveTimeMs,timeMs,budgetMs,error,unsupported,loadError,sourceValidation,floatApproximation",
+                "timeToBestMs,timeToFirstFeasibleMs,solveTimeMs,timeMs,budgetMs,error,unsupported,loadError,sourceValidation,floatApproximation,buildFingerprint,validationPolicy",
         )
         for (case in cases) {
             val record = case.record as? JsonObject
@@ -29,6 +29,7 @@ object Results {
                 if (outcome?.feasible == true) field("timeToFirstFeasibleMs") else "",
                 outcome?.solveTimeMs?.toString().orEmpty(), outcome?.timeMs?.toString().orEmpty(), field("budgetMs"), (field("command") == "ERROR").toString(),
                 stat("unsupported"), stat("loadError"), stat("sourceValidation"), stat("floatApproximation"),
+                field("buildFingerprint"), field("validationPolicy"),
             )
             appendLine(row.joinToString(",") { cell(it) })
         }

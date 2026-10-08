@@ -97,6 +97,9 @@ data class ArmSummary(
     val wins: Int,
     val losses: Int,
     val ties: Int,
+    val buildFingerprints: List<String> = emptyList(),
+    val validationPolicies: List<String> = emptyList(),
+    val missingProvenance: Int = 0,
 )
 
 /** Arms that contradict each other on one problem, which at least one of them got wrong. */
@@ -121,6 +124,13 @@ object Compare {
         if (abs(a.timeMs - b.timeMs) <= maxOf(TIE_MS, (TIE_SHARE * maxOf(a.timeMs, b.timeMs)).toLong())) return 0.5
         return b.timeMs.toDouble() / (a.timeMs + b.timeMs)
     }
+
+    private fun provenanceValue(case: CaseResult, name: String): String? =
+        ((case.record as? JsonObject)?.get(name) as? JsonPrimitive)?.takeUnless { it.content == "null" }
+            ?.content?.takeIf { it.isNotBlank() }
+
+    private fun provenanceValues(cases: List<CaseResult>, label: String, name: String): List<String> =
+        cases.filter { it.arm == label }.mapNotNull { provenanceValue(it, name) }.distinct().sorted()
 
     /** Times this close (ms) are a tie, however short the runs. */
     const val TIE_MS = 250L
@@ -155,6 +165,10 @@ object Compare {
                 label, own.size, own.count { it.rank > 0 }, own.count { !it.error && (it.proven || it.feasible == false) },
                 own.count { it.error || it.loadError != null }, own.count { it.unsupported != null },
                 score, wins, losses, ties,
+                buildFingerprints = provenanceValues(cases, label, "buildFingerprint"),
+                validationPolicies = provenanceValues(cases, label, "validationPolicy"),
+                missingProvenance = cases.count { it.arm == label && it.record != null &&
+                    (provenanceValue(it, "buildFingerprint") == null || provenanceValue(it, "validationPolicy") == null) },
             )
         }
         return Comparison(arms, disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))

@@ -235,8 +235,19 @@ object Experiments {
         // The result cache would replay an earlier run's timings: a case always solves. The corpus cap stays off so
         // no case evicts a collection another case is reading.
         val opts = "-Dklause.bench.cache=false -Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$worktree"
-        return "cd ${quote("$worktree/klause-bench")} && JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
+        return "cd ${quote("$worktree/klause-bench")} && " +
+            "if [ -f build/provenance.json ]; then export KLAUSE_BENCH_PROVENANCE=\"\$PWD/build/provenance.json\"; " +
+            "else unset KLAUSE_BENCH_PROVENANCE; fi && JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
             "exec ./build/install/klause-bench/bin/klause-bench solve-one $args out=\"\$JOB_DIR/cases/$index\""
+    }
+
+    internal fun captureProvenance(worktree: String): String {
+        val bench = quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")
+        val manifest = quote("$worktree/klause-bench/build/provenance.json")
+        return "(cd ${quote("$worktree/klause-bench")} && rm -f $manifest && " +
+            "help=\$($bench --help) && case \"\$help\" in " +
+            "*'bench provenance out=<file>'*) $bench provenance ${quote("out=$worktree/klause-bench/build/provenance.json")};; " +
+            "*) echo 'bench revision has no provenance manifest support';; esac)"
     }
 
     /** How long a case may run: the solver's own budget, the bench's hard kill at twice it, and room for the JVMs. */

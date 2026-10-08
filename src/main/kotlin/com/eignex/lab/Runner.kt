@@ -318,6 +318,7 @@ class Runner(private val config: Config, private val store: Store) {
             withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
                 sh(log, path.toFile(),
                     "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+                sh(log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))

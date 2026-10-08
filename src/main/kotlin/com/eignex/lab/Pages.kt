@@ -191,7 +191,7 @@ private fun experimentSection(
     if (repeats > 1) append(" × $repeats repeats")
     if (job != null) append(" · <a href=\"/experiments/$job/cases.csv\">cases.csv</a>")
     append("</small></h2>")
-    append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
+    append("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th>build / validation</th><th class=\"num\">done</th><th class=\"num\">solved</th>")
     append("<th class=\"num\">proven</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th>")
     if (compared) append("<th class=\"num\">score</th><th>vs ${esc(labels.first())}</th>")
     append(if (job != null) "<th>bench csv</th></tr>" else "</tr>")
@@ -202,7 +202,8 @@ private fun experimentSection(
         val commit = commitUrl(config.repoUrl, planned.sha)?.let { "<a href=\"$it\">${planned.sha.take(9)}</a>" } ?: planned.sha.take(9)
         val versus = paired[summary.label]?.let(::versus) ?: "<span class=\"muted\">baseline</span>"
         append("<tr><td><b>${esc(summary.label)}</b><br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
-        append("<td><code>$commit</code></td><td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
+        append("<td><code>$commit</code></td><td>${provenance(summary)}</td>")
+        append("<td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
         append("<td class=\"num\">${estimate(armStats.solved, "%.1f")}</td><td class=\"num\">${summary.proven}</td>")
         append("<td class=\"num\">${if (summary.unsupported > 0) "<span class=\"PARTIAL\">${summary.unsupported}</span>" else "0"}</td>")
         append("<td class=\"num\">${if (summary.errors > 0) "<span class=\"FAILED\">${summary.errors}</span>" else "0"}</td>")
@@ -275,6 +276,23 @@ private fun referenceSection(labels: List<String>, cases: List<CaseResult>, refe
             append("</ul>")
         }
     }
+
+private fun provenance(summary: ArmSummary): String = buildString {
+    if (summary.buildFingerprints.isEmpty() && summary.validationPolicies.isEmpty() && summary.missingProvenance == 0) {
+        append("<span class=\"muted\">pending</span>")
+        return@buildString
+    }
+    if (summary.buildFingerprints.size > 1 || summary.validationPolicies.size > 1) {
+        append("<span class=\"PARTIAL\">mixed provenance</span><br>")
+    }
+    append(summary.buildFingerprints.joinToString("<br>") { "<code title=\"${esc(it)}\">${esc(it.take(12))}</code>" })
+    if (summary.validationPolicies.isNotEmpty()) {
+        append("<br><small>${summary.validationPolicies.joinToString(", ") { esc(it) }}</small>")
+    }
+    if (summary.missingProvenance > 0) {
+        append("<br><span class=\"PARTIAL\">records missing provenance: ${summary.missingProvenance}</span>")
+    }
+}
 
 /** An arm against the baseline: the time ratio with its interval and test, then better and worse with theirs. */
 private fun versus(p: Paired): String {

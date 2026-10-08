@@ -60,6 +60,14 @@ alternate, every arm running once per seed and repeat before the next (A, B, A, 
 bench result cache is off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
 /experiments/<id>/cases`.
 
+After building each commit, setup captures the installed CLI and Java runtime hashes in a provenance
+manifest when that bench revision supports it. Each case validates the installed files' metadata and
+adds its runtime options to the identity, avoiding a full runtime hash in every JVM. AWS setup also
+captures a fresh manifest when it restores a cached distribution. Older bench revisions run without
+one. The raw records and case CSV retain `buildFingerprint` and `validationPolicy`; arm summaries and
+experiment pages list them and mark mixed identities or records missing provenance. These labels
+disclose what contributed to the aggregate; they do not change its scoring.
+
 An experiment's page (its job id) compares the arms:
 
 - each arm's commit, cases done, solved, proven (optima and infeasibility), unsupported (models klause declines),
