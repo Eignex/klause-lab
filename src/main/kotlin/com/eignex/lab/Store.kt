@@ -788,6 +788,7 @@ class Store(file: Path) {
         val job = job(jobId) ?: return false
         val spec = job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
+        require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli requires host=aws" }
         val moved = spec.copy(host = host, machines = machines.takeIf { host == Experiments.AWS_HOST })
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
     }
@@ -811,8 +812,12 @@ class Store(file: Path) {
 
     /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
     @Synchronized
-    fun setParallel(jobId: Long, parallel: Int): Boolean =
-        update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
+    fun setParallel(jobId: Long, parallel: Int): Boolean {
+        require(job(jobId)?.experiment?.profileCli != true || parallel == 1) {
+            "profileCli requires parallel=1"
+        }
+        return update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
+    }
 
     @Synchronized
     fun parallel(jobId: Long): Int = connection.prepareStatement("SELECT parallel FROM jobs WHERE id = ?").use {
