@@ -238,6 +238,23 @@ class Ssh(
         return out
     }
 
+    fun download(remote: String, destination: Path, timeoutSec: Long) {
+        var attempt = 1
+        while (true) {
+            try {
+                receiveFile(start("cat -- ${quote(remote)}", mergeErrors = false), destination, timeoutSec, cancelled)
+                return
+            } catch (error: FileTransferFailure) {
+                if ((error.exit != null && error.exit != SSH_FAILED) || attempt >= NETWORK_RETRY.attempts || cancelled()) {
+                    throw error
+                }
+                val until = System.currentTimeMillis() + NETWORK_RETRY.delayAfter(attempt)
+                while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
+                attempt++
+            }
+        }
+    }
+
     companion object {
         const val TIMED_OUT = -1
         private const val SSH_FAILED = 255
@@ -261,6 +278,7 @@ class AwsHost(
     val ssh: Ssh,
     override val cores: Int,
     private val solveJavaOpts: String,
+    private val profileCli: Boolean = false,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val corpus = "$HOME/corpus"
@@ -289,7 +307,7 @@ class AwsHost(
         var attempt = 1
         while (true) {
             try {
-                return runOnce(command, dir)
+                return runOnce(command, dir, attempt)
             } catch (e: SshDropped) {
                 if (attempt >= SSH_RETRY.attempts || cancelled()) throw IllegalStateException(e.message, e)
                 val until = System.currentTimeMillis() + SSH_RETRY.delayAfter(attempt)
@@ -301,13 +319,16 @@ class AwsHost(
 
     private class SshDropped(message: String) : Exception(message)
 
-    private fun runOnce(command: Command, dir: Path): Int {
+    private fun runOnce(command: Command, dir: Path, attempt: Int): Int {
         val i = command.index
+        val profile = if (profileCli) "$HOME/job/cases/$i/profile-$attempt" else null
+        val options = profile?.let(CliMeasurements::options).orEmpty()
         val script = """
             $ENV
-            export JOB_DIR=$HOME/job KLAUSE_CLI_OPTS=${quote("$solveJavaOpts -XX:ActiveProcessorCount=${command.cores}")}
+            export JOB_DIR=$HOME/job KLAUSE_CLI_OPTS=${quote("$solveJavaOpts -XX:ActiveProcessorCount=${command.cores} $options")}
             export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1
             mkdir -p ${'$'}JOB_DIR/cases
+            ${profile?.let { "mkdir -p ${quote(it)}; export KLAUSE_LAB_PROFILE_DIR=${quote(it)}" }.orEmpty()}
             timeout -k 30 ${command.timeoutSec} bash -c ${quote(command.cmd)} > ${'$'}JOB_DIR/$i.out 2> ${'$'}JOB_DIR/$i.err
             echo "exit=${'$'}?"
             echo "$RECORD"
@@ -338,6 +359,12 @@ class AwsHost(
         }
         val result = if (exit == TIMEOUT_EXIT_CODE) TIMEOUT else exit
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
+        if (profile != null) {
+            val files = dir.resolve("cases/$i/profile-$attempt").createDirectories()
+            for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), PROFILE_TRANSFER_SEC)
+            files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
+                CliMeasurementManifest.serializer(), CliMeasurementManifest(i, attempt, instance, options)))
+        }
         return result
     }
 
@@ -351,6 +378,7 @@ class AwsHost(
         private const val KILL_TIMEOUT_SEC = 30L
         private const val POLL_MS = 1000L
         private const val READ_WAIT_MS = 5_000L
+        private const val PROFILE_TRANSFER_SEC = 120L
         private const val MS_PER_SEC = 1000L
         private const val ERROR_CHARS = 2000
         private const val TIMEOUT_EXIT_CODE = 124
@@ -694,7 +722,8 @@ class AwsWorker(
         return new.map { id ->
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
-            AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts) {
+            AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
+                job.experiment?.profileCli == true) {
                 store.cancelRequested(job.id)
             }
         }
@@ -760,6 +789,9 @@ class AwsWorker(
         }
         val out = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) { host.ssh.run(script, BUILD_TIMEOUT_SEC) }
         log.appendText("[${host.instance}] $out\n")
+        if (job.experiment?.profileCli == true) {
+            for (sha in shas) host.ssh.run(CliMeasurements.install(host.worktree(sha)), SSH_STEP_SEC)
+        }
         runner.log(job.id, "${host.instance}: built")
     }
 
@@ -785,7 +817,7 @@ class AwsWorker(
         shutdown -h +${aws.maxHours * MINUTES_PER_HOUR}
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -q
-        apt-get install -yq git zstd unzip curl xz-utils
+        apt-get install -yq git zstd unzip curl xz-utils time python3
         mkdir -p /opt/jdk /opt/minizinc
         curl -fsSL https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse | tar -xz -C /opt/jdk --strip-components=1
         curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz | tar -xz -C /opt/minizinc --strip-components=1
