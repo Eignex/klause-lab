@@ -192,7 +192,24 @@ class Ssh(
         .start()
 
     /** Run [script] to its end, at most [timeoutSec]; its exit (255 when SSH itself failed) and its output. */
+    /**
+     * Run [script] to its end, at most [timeoutSec]; its exit (255 when SSH itself failed) and its output. A connection
+     * the lab machine's own network dropped is tried again, backing off to about a quarter of an hour in all: the
+     * scripts it runs (a build, a select, a sync) pick up where a cut-off run left them. A refused connection, as from an
+     * instance still booting, is returned at once for its caller to wait out.
+     */
     fun exec(script: String, timeoutSec: Long): Pair<Int, String> {
+        var attempt = 1
+        while (true) {
+            val (exit, out) = execOnce(script, timeoutSec)
+            if (exit != SSH_FAILED || !NETWORK.containsMatchIn(out) || attempt >= NETWORK_RETRY.attempts || cancelled()) return exit to out
+            val until = System.currentTimeMillis() + NETWORK_RETRY.delayAfter(attempt)
+            while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
+            attempt++
+        }
+    }
+
+    private fun execOnce(script: String, timeoutSec: Long): Pair<Int, String> {
         val process = start(script)
         val output = StringBuilder()
         val reader = thread(isDaemon = true) { output.append(process.inputStream.bufferedReader().readText()) }
@@ -221,6 +238,11 @@ class Ssh(
 
     companion object {
         const val TIMED_OUT = -1
+        private const val SSH_FAILED = 255
+        /** SSH failing because the lab machine's network is down, rather than the instance refusing it. */
+        private val NETWORK = Regex("Network is unreachable|No route to host|Connection timed out|Operation timed out|" +
+            "Connection reset|Broken pipe|Could not resolve|Connection closed by remote host")
+        private val NETWORK_RETRY = Backoff(attempts = 8, baseMs = 15_000, maxMs = 300_000)
         private const val READ_WAIT_MS = 5_000L
         private const val POLL_MS = 1000L
         private const val MS_PER_SEC = 1000L
@@ -364,8 +386,13 @@ class AwsWorker(
     fun loop() {
         knownHosts.parent.createDirectories()
         runCatching { recover() }.onFailure { println("aws: recovery failed: ${it.message}") }
+        var swept = System.currentTimeMillis()
         while (true) {
             runCatching { claim() }.onFailure { println("aws: ${it.message}") }
+            if (System.currentTimeMillis() - swept > SWEEP_MS) {
+                swept = System.currentTimeMillis()
+                runCatching { sweep() }.onFailure { println("aws: sweep failed: ${it.message}") }
+            }
             Thread.sleep(POLL_MS)
         }
     }
@@ -406,6 +433,12 @@ class AwsWorker(
             store.requeueInterrupted(job.id)
             store.requeue(job.id)
         }
+        sweep()
+    }
+
+    /** Terminate the lab's instances no running job owns: ones a job could not terminate when it ended, as when the
+     *  lab machine's network was down then. They would hold the vCPU quota against every launch. */
+    private fun sweep() {
         val owned = store.active().filter { it.status == Status.RUNNING }.map { it.id }.toSet()
         val orphans = cli.running().filter { (_, job) -> job == null || job !in owned }.map { it.first }
         if (orphans.isNotEmpty()) {
@@ -478,9 +511,17 @@ class AwsWorker(
                 store.finish(claimed.id, Status.FAILED, e.message ?: e.toString())
             }
         } finally {
-            runCatching { cli.terminate(instances) }.onFailure { runner.log(claimed.id, "could not terminate $instances: ${it.message}") }
+            if (instances.isNotEmpty()) {
+                // Retried, since the lab machine's network may be what ended the job; what still fails the sweep in
+                // [loop] terminates within minutes.
+                runCatching {
+                    retrying(config.retry, onRetry = { _, wait, e ->
+                        runner.log(claimed.id, "terminating $instances failed, retrying in ${wait / MS_PER_SEC} s: ${e.message}")
+                    }) { cli.terminate(instances) }
+                }.onSuccess { runner.log(claimed.id, "terminated $instances") }
+                    .onFailure { runner.log(claimed.id, "could not terminate $instances; the next sweep will: ${it.message}") }
+            }
             Files.deleteIfExists(config.jobDir(claimed.id).resolve(INSTANCES_FILE))
-            if (instances.isNotEmpty()) runner.log(claimed.id, "terminated $instances")
         }
     }
 
@@ -627,6 +668,7 @@ class AwsWorker(
         }
 
         private const val POLL_MS = 10_000L
+        private const val SWEEP_MS = 5 * 60_000L
         private const val SSH_STEP_SEC = 60L
         private const val SHA_LOG = 9
         /** The errors AWS refuses an instance with for a quota or a lack of capacity, rather than for a fault. */
