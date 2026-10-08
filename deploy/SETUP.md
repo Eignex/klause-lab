@@ -182,7 +182,7 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
   launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
   It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
-  `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` 4, which the account's default quota of 32 on-demand vCPUs fits, `cores` 4, `maxHours` 24,
+  `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` and `vcpuQuota`, now 8 and the account's 128 on-demand vCPUs, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
   start the AWS worker. After that the worker rereads it on every poll, so a raised `vcpuQuota` or a new
   `maxInstances` applies to the next job without a restart.
@@ -208,6 +208,14 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   dealt round-robin. Each instance runs `parallel` cases at once (default `cores`, one per physical core) over SSH under
   `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
   local job.
+- Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per physical core, is the
+  controlled setting: four solves on four physical cores leave every hyperthread pair one solve, the 16 GiB of a
+  c7i.2xlarge holds four `-Xmx3g` solves, and a problem's arms run on the same instance, so a comparison never spans
+  machines. `parallel=1` does not make an experiment more controlled; it only leaves three of four cores idle and
+  takes four times as long. Set it below the cores only for an arm that needs more memory per case than a quarter of
+  the instance. Likewise, don't keep `machines` low to spare the quota: the worker shares it between jobs on its own,
+  and a job waits for vCPUs rather than failing. Use as many instances as the job has problems to spread over, up to
+  `maxInstances`.
 - The queue and history show where each job runs (Mac or AWS, and a running AWS job's instance count), and a queued
   job's place in its own host's queue. A queued job that has not been planned can move between the Mac and AWS from
   its page, or with `lab host <id> lab|aws [machines]`; once planned, its commands name paths on its host.
