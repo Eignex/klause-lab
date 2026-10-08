@@ -572,7 +572,7 @@ class AwsWorker(
         retrying(
             CAPACITY_WAIT,
             onRetry = { _, wait, e -> if (!CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
-                runner.log(job.id, "AWS is short of capacity for another instance; trying again in ${wait / MS_PER_SEC} s") },
+                runner.log(job.id, "AWS refused another instance (${CAPACITY.find(e.message.orEmpty())?.value}); trying again in ${wait / MS_PER_SEC} s") },
             sleep = { wait -> check(!store.cancelRequested(job.id)) { "cancelled" }; Thread.sleep(wait) },
         ) { cli.launch(job.id, "klause-lab-${job.id}-$n", userData, type) }
 
