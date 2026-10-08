@@ -225,15 +225,20 @@ class AwsHost(
         return out.lines()
     }
 
-    /** Run [command], again from the start when SSH itself dropped before the case reported its exit. */
+    /**
+     * Run [command], again from the start when SSH itself dropped before the case reported its exit: the lab machine's
+     * own network drops for minutes at a time, so the retries back off from 15 s to 5 min, about a quarter of an hour
+     * in all, before the job fails. A cancel ends the wait.
+     */
     override fun run(command: Command, dir: Path): Int {
         var attempt = 1
         while (true) {
             try {
                 return runOnce(command, dir)
             } catch (e: SshDropped) {
-                if (attempt >= SSH_ATTEMPTS || cancelled()) throw IllegalStateException(e.message, e)
-                Thread.sleep(SSH_RETRY_MS)
+                if (attempt >= SSH_RETRY.attempts || cancelled()) throw IllegalStateException(e.message, e)
+                val until = System.currentTimeMillis() + SSH_RETRY.delayAfter(attempt)
+                while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
                 attempt++
             }
         }
@@ -290,8 +295,7 @@ class AwsHost(
         private const val MS_PER_SEC = 1000L
         private const val ERROR_CHARS = 2000
         private const val TIMEOUT_EXIT_CODE = 124
-        private const val SSH_ATTEMPTS = 3
-        private const val SSH_RETRY_MS = 15_000L
+        private val SSH_RETRY = Backoff(attempts = 8, baseMs = 15_000, maxMs = 300_000)
 
         /** The runner's exits for a case cut off by a cancel or by its timeout. */
         const val CANCELLED = -1000
