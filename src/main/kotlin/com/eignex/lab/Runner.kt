@@ -159,7 +159,7 @@ class Runner(private val config: Config, private val store: Store) {
                 } else {
                     // Within the job's case limit and the lab's core budget, in order: a case too big for the cores
                     // left waits for room rather than letting smaller later ones jump it. One case always may run.
-                    val limit = store.parallel(job.id).coerceIn(1, config.maxParallel)
+                    val limit = store.parallel(job.id).coerceIn(1, host.maxParallel)
                     while (pending.isNotEmpty() && active.size < limit &&
                         (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
                     ) {
@@ -381,6 +381,7 @@ class Runner(private val config: Config, private val store: Store) {
         override val corpus get() = config.corpusDir.toString()
         override val yieldsToUpdates = true
         override val yieldsToPriority = true
+        override val maxParallel get() = config.maxParallel
 
         override fun worktree(sha: String) = experimentWorktree(job.id, sha, primary).toString()
 

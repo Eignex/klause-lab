@@ -50,4 +50,13 @@ class AwsTest {
         assertEquals(listOf(true, Experiments.AWS_HOST, 2), listOf(moved, spec?.host, spec?.machines))
         assertEquals(false, store.setHost(planned, Experiments.AWS_HOST, null))
     }
+
+    @Test
+    fun `a job gets the smallest instance with the cores one of its cases needs, within the quota`() {
+        val aws = AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null)
+
+        assertEquals(listOf("c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge"), aws.sizes.map { it.type })
+        assertEquals(listOf("c7i.2xlarge", "c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge", null),
+            listOf(1, 4, 5, 16, 17).map { aws.sizeFor(it)?.type })
+    }
 }

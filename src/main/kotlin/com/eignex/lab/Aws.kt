@@ -20,8 +20,10 @@ data class AwsConfig(
     val region: String,
     val profile: String,
     val instanceType: String,
-    /** The most instances the lab runs at once, over every AWS job. */
+    /** The most instances one job splits over by default. */
     val maxInstances: Int,
+    /** The account's on-demand vCPU quota for the family: what every running instance together may hold. */
+    val vcpuQuota: Int = DEFAULT_VCPU_QUOTA,
     val keyName: String,
     /** The private key of [keyName], on the lab machine. */
     val keyFile: String,
@@ -41,7 +43,24 @@ data class AwsConfig(
     /** The instance profile whose role may read and write [corpusBucket]. */
     val instanceProfile: String? = null,
 ) {
+    /** The sizes a job can get, smallest first: [instanceType] and the larger sizes of its family the quota allows. */
+    val sizes: List<InstanceSize>
+        get() {
+            val family = instanceType.substringBefore('.')
+            val smallest = SIZE_VCPUS[instanceType.substringAfter('.')] ?: return listOf(InstanceSize(instanceType, DEFAULT_SIZE_VCPUS))
+            return SIZE_VCPUS.entries.filter { (_, vcpus) -> vcpus in smallest..vcpuQuota }
+                .map { (size, vcpus) -> InstanceSize("$family.$size", vcpus) }
+        }
+
+    /** The smallest size with [cores] physical cores for one case, or null when none fits the quota. */
+    fun sizeFor(cores: Int): InstanceSize? = sizes.firstOrNull { it.cores >= cores }
+
     companion object {
+        private const val DEFAULT_VCPU_QUOTA = 32
+        private const val DEFAULT_SIZE_VCPUS = 8
+        /** vCPUs of the compute families' sizes; a physical core is two of them. */
+        private val SIZE_VCPUS = linkedMapOf("xlarge" to 4, "2xlarge" to 8, "4xlarge" to 16, "8xlarge" to 32, "12xlarge" to 48, "16xlarge" to 64)
+
         fun load(file: Path): AwsConfig? {
             if (!file.exists()) return null
             val p = Properties().apply { file.toFile().inputStream().use(::load) }
@@ -51,6 +70,7 @@ data class AwsConfig(
                 profile = get("profile", "klause-lab")!!,
                 instanceType = get("instanceType", "c7i.2xlarge")!!,
                 maxInstances = get("maxInstances", "4")!!.toInt(),
+                vcpuQuota = get("vcpuQuota", "$DEFAULT_VCPU_QUOTA")!!.toInt(),
                 keyName = requireNotNull(get("keyName")) { "aws.properties needs keyName" },
                 keyFile = requireNotNull(get("keyFile")) { "aws.properties needs keyFile" },
                 securityGroup = requireNotNull(get("securityGroup")) { "aws.properties needs securityGroup" },
@@ -66,6 +86,11 @@ data class AwsConfig(
     }
 }
 
+/** An instance size: its type and vCPUs; its physical cores are half the vCPUs, each running two hardware threads. */
+data class InstanceSize(val type: String, val vcpus: Int) {
+    val cores: Int get() = vcpus / 2
+}
+
 /** The AWS CLI, as the lab's IAM user, in the background so it stays off the solves' cores. */
 class AwsCli(private val aws: AwsConfig) {
     fun call(vararg args: String): String {
@@ -79,10 +104,10 @@ class AwsCli(private val aws: AwsConfig) {
     fun image(): String = aws.ami ?: call("ssm", "get-parameter", "--name", UBUNTU_IMAGE, "--query", "Parameter.Value")
 
     /** Launch one instance for job [jobId], tagged as the lab's, terminating itself when it powers off. */
-    fun launch(jobId: Long, name: String, userData: File): String = call(
+    fun launch(jobId: Long, name: String, userData: File, type: String): String = call(
         "ec2", "run-instances",
         "--image-id", image(),
-        "--instance-type", aws.instanceType,
+        "--instance-type", type,
         "--key-name", aws.keyName,
         "--security-group-ids", aws.securityGroup,
         *(aws.subnet?.let { arrayOf("--subnet-id", it) } ?: emptyArray()),
@@ -217,6 +242,7 @@ class AwsHost(
     override val corpus = "$HOME/corpus"
     override val yieldsToUpdates = false
     override val yieldsToPriority = false
+    override val maxParallel get() = cores
 
     override fun worktree(sha: String) = "$HOME/work/${sha.take(SHA_DIR)}"
 
@@ -339,26 +365,38 @@ class AwsWorker(
         knownHosts.parent.createDirectories()
         runCatching { recover() }.onFailure { println("aws: recovery failed: ${it.message}") }
         while (true) {
-            runCatching {
-                val free = aws.maxInstances - busy.get()
-                if (free > 0) {
-                    store.next(Experiments.AWS_HOST)?.let { job ->
-                        val want = job.experiment?.machines ?: aws.maxInstances
-                        val machines = want.coerceIn(1, free)
-                        busy.addAndGet(machines)
-                        thread(name = "aws-${job.id}") {
-                            // What the job holds of the reservation: less once AWS gave it fewer than it asked for.
-                            val held = AtomicInteger(machines)
-                            try {
-                                work(job, machines) { launched -> busy.addAndGet(-(held.getAndSet(launched) - launched)) }
-                            } finally {
-                                busy.addAndGet(-held.get())
-                            }
-                        }
-                    }
-                }
-            }.onFailure { println("aws: ${it.message}") }
+            runCatching { claim() }.onFailure { println("aws: ${it.message}") }
             Thread.sleep(POLL_MS)
+        }
+    }
+
+    /**
+     * Take the next AWS job if the vCPUs it needs are free: instances of the size its arms' `processors` call for
+     * ([AwsConfig.sizeFor]), as many as it asks for or the quota leaves, at least one.
+     */
+    private fun claim() {
+        val next = store.queueOrder(Experiments.AWS_HOST).firstOrNull()?.let(store::job) ?: return
+        val spec = checkNotNull(next.experiment)
+        val cores = Experiments.arms(spec).maxOf { it.cores }
+        val size = aws.sizeFor(cores)
+        val free = (aws.vcpuQuota - busy.get()) / (size?.vcpus ?: aws.vcpuQuota)
+        if (size != null && free < 1) return
+        val job = store.next(Experiments.AWS_HOST) ?: return
+        check(job.id == next.id) { "claimed ${job.id}, expected ${next.id}" }
+        if (size == null) {
+            store.finish(job.id, Status.FAILED, "its cases need $cores cores, more than an instance within the ${aws.vcpuQuota}-vCPU quota has")
+            return
+        }
+        val machines = (spec.machines ?: aws.maxInstances).coerceIn(1, free)
+        busy.addAndGet(machines * size.vcpus)
+        thread(name = "aws-${job.id}") {
+            // What the job holds of the reservation, in vCPUs: less once AWS gave it fewer instances than it asked for.
+            val held = AtomicInteger(machines * size.vcpus)
+            try {
+                work(job, machines, size) { launched -> busy.addAndGet(-(held.getAndSet(launched * size.vcpus) - launched * size.vcpus)) }
+            } finally {
+                busy.addAndGet(-held.get())
+            }
         }
     }
 
@@ -376,7 +414,7 @@ class AwsWorker(
         }
     }
 
-    private fun work(claimed: Job, machines: Int, launched: (Int) -> Unit) {
+    private fun work(claimed: Job, machines: Int, size: InstanceSize, launched: (Int) -> Unit) {
         val dir = config.jobDir(claimed.id).createDirectories()
         val log = dir.resolve("setup.log").toFile().apply { appendText("") }
         val instances = ArrayList<String>()
@@ -385,7 +423,7 @@ class AwsWorker(
             val spec = checkNotNull(job.experiment)
             val (arms, shas) = runner.resolveArms(job, spec, log)
             val primary = shas.getValue(arms.first().ref)
-            val hosts = launch(job, machines, instances)
+            val hosts = launch(job, machines, size, instances)
             // A job that got fewer instances than it reserved hands the rest back, so the next job can use them.
             launched(hosts.size)
             parallelOn(hosts) { host -> setup(job, host, shas.values.distinct(), log) }
@@ -414,6 +452,9 @@ class AwsWorker(
                 selections.forEach { host.select(host.worktree(primary), it) }
             }
             store.setup(job.id, primary)
+            // Unset, a job runs as many cases on each instance as it has physical cores; the core budget then fits
+            // cases that need several of them.
+            if (spec.parallel == null) store.setParallel(job.id, size.cores)
             val shards = shards(job.id, hosts.size)
             runner.log(job.id, "running on ${hosts.size} instances: " + hosts.mapIndexed { i, h -> "${h.instance} (${shards[i].size} cases)" }.joinToString())
             val outcomes = parallelOn(hosts.indices.toList()) { i -> runner.dispatch(checkNotNull(store.job(job.id)), dir, hosts[i], shards[i]) }
@@ -445,7 +486,7 @@ class AwsWorker(
 
     /** Launch [machines] instances for [job], recording each in [instances] at once so that it is terminated whatever
      *  happens next. */
-    private fun launch(job: Job, machines: Int, instances: MutableList<String>): List<AwsHost> {
+    private fun launch(job: Job, machines: Int, size: InstanceSize, instances: MutableList<String>): List<AwsHost> {
         runCatching { cli.admitThisMachine() }
         val userData = Files.createTempFile("klause-lab-user-data", ".sh").toFile()
         try {
@@ -453,24 +494,24 @@ class AwsWorker(
             for (n in 0 until machines) {
                 // AWS refusing more for a quota or a lack of capacity is not a reason to fail a job that already has
                 // instances: it runs on those. Without any, the launch is retried like any other step.
-                val id = runCatching { launchWhenCapacity(job, n, userData) }.getOrElse { e ->
+                val id = runCatching { launchWhenCapacity(job, n, userData, size.type) }.getOrElse { e ->
                     if (instances.isNotEmpty() && CAPACITY.containsMatchIn(e.message.orEmpty())) {
                         runner.log(job.id, "AWS gave no more instances (${CAPACITY.find(e.message.orEmpty())?.value}); running on ${instances.size}")
                         break
                     }
-                    runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }
+                    runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, "klause-lab-${job.id}-$n", userData, size.type) }
                 }
                 instances += id
             }
         } finally {
             userData.delete()
         }
-        runner.log(job.id, "launched ${aws.instanceType} instances $instances")
-        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile().writeText(instances.joinToString("\n", postfix = "\n"))
+        runner.log(job.id, "launched ${size.type} instances $instances")
+        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile().writeText(instances.joinToString("\n", postfix = "\n") { "$it ${size.type}" })
         return instances.map { id ->
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
-            AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, aws.cores, config.solveJavaOpts) {
+            AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts) {
                 store.cancelRequested(job.id)
             }
         }
@@ -480,13 +521,13 @@ class AwsWorker(
      * Launch one instance, retrying for a couple of minutes while AWS refuses for a quota or a lack of capacity: instances
      * a job just terminated hold their vCPUs against the quota for a minute or so after it ended.
      */
-    private fun launchWhenCapacity(job: Job, n: Int, userData: File): String =
+    private fun launchWhenCapacity(job: Job, n: Int, userData: File, type: String): String =
         retrying(
             CAPACITY_WAIT,
             onRetry = { _, wait, e -> if (!CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
                 runner.log(job.id, "AWS is short of capacity for another instance; trying again in ${wait / MS_PER_SEC} s") },
             sleep = { wait -> check(!store.cancelRequested(job.id)) { "cancelled" }; Thread.sleep(wait) },
-        ) { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }
+        ) { cli.launch(job.id, "klause-lab-${job.id}-$n", userData, type) }
 
     /** Wait for [host]'s bootstrap, then clone the repository and build each of [shas] on it. */
     private fun setup(job: Job, host: AwsHost, shas: List<String>, log: File) {
@@ -513,7 +554,7 @@ class AwsWorker(
             for (sha in shas) {
                 val worktree = host.worktree(sha)
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
-                val build = "(cd $worktree && ./gradlew :klause-cli:installJvmDist :klause-bench:installDist -q --max-workers=${aws.cores})"
+                val build = "(cd $worktree && ./gradlew :klause-cli:installJvmDist :klause-bench:installDist -q --max-workers=${host.cores})"
                 if (bucket == null) {
                     appendLine(build)
                 } else {

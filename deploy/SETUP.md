@@ -193,8 +193,14 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   and refreshed after one, and each commit's built distributions (`builds/<sha>.tar.zst`): an instance that finds its
   commit there unpacks it instead of building, so a commit is built once across every job and instance.
 - The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
-  claims the next `aws` job while instances are free and gives it `machines` of them (default: all free ones, at most
-  `maxInstances` over every job), each job on its own thread.
+  claims the next `aws` job when the vCPUs it needs are free and gives it `machines` instances (default
+  `maxInstances`, as many as the account's `vcpuQuota` of on-demand vCPUs leaves), each job on its own thread.
+- An instance's size follows the job's arms: the smallest size of the family (`c7i.2xlarge`, `4xlarge`, `8xlarge`)
+  with as many physical cores as the arm with the most `processors` needs for one case. Each instance runs as many
+  cases at once as it has physical cores, a case holding its `processors` of them, unless the spec sets `parallel`,
+  which on AWS counts per instance. So single-core arms run 4 cases on each c7i.2xlarge, and a 4-core portfolio gets
+  a c7i.2xlarge running one case, or 8 cores per case a c7i.4xlarge. The job page shows its shape, e.g.
+  `4 × c7i.2xlarge, 4 cases each`.
 - A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
   It plans on the first, and the others fetch the same corpora before cases start. The cases are split by problem: a
   problem's arms, seeds and repeats all run on one instance, so each comparison is made on one machine, the problems

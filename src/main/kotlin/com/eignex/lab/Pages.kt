@@ -105,7 +105,7 @@ internal fun jobPage(
         // A job changes host only before it is planned: its commands then name paths on the host that planned it.
         if (job.status == Status.QUEUED && job.commands.isEmpty() && job.experiment != null) {
             if (job.experiment.host == Experiments.AWS_HOST) {
-                append("<label>machines <input id=\"machines\" type=\"number\" min=\"1\" max=\"${config.aws?.maxInstances ?: 1}\" ")
+                append("<label>machines <input id=\"machines\" type=\"number\" min=\"1\" max=\"${config.aws?.let { it.vcpuQuota / it.sizes.first().vcpus } ?: 1}\" ")
                 append("value=\"${job.experiment.machines ?: ""}\" placeholder=\"all free\"></label>")
                 append("<button onclick=\"act('/jobs/$id/host', {host: 'aws', machines: +document.getElementById('machines').value || null})\">set</button>")
                 append("<button onclick=\"act('/jobs/$id/host', {host: 'lab'})\">run on the Mac</button>")
@@ -966,12 +966,13 @@ private fun hostCell(config: Config, job: Job): String {
     if (spec?.host != Experiments.AWS_HOST) return "<span class=\"where\">Mac</span>"
     val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
+    val type = instances.firstOrNull()?.substringAfter(' ', "")?.takeIf { it.isNotEmpty() }
     val detail = when {
-        instances.isNotEmpty() -> "${instances.size} × ${config.aws?.instanceType ?: "instance"}"
+        instances.isNotEmpty() -> "${instances.size} × ${type ?: "instance"}, ${job.parallel} cases each"
         job.status in ACTIVE -> spec.machines?.let { "asks for $it" } ?: "as many as are free"
         else -> null
     }
-    return "<span class=\"where aws\">AWS</span>" + (detail?.let { "<br><small title=\"${esc(instances.joinToString())}\">$it</small>" } ?: "")
+    return "<span class=\"where aws\">AWS</span>" + (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">$it</small>" } ?: "")
 }
 
 private fun statusCell(job: Job, position: Int?): String {

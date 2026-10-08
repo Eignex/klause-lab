@@ -97,7 +97,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = call.receive<ExperimentSpec>()
             requireDescription(spec)
             requireHost(spec, config)
-            Experiments.validate(spec, config.maxParallel, if (spec.host == Experiments.AWS_HOST) config.aws!!.cores else config.cores)
+            // An AWS job's cores are checked against the instance sizes, in requireHost; parallel there is per instance.
+            Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) Int.MAX_VALUE else config.maxParallel,
+                if (spec.host == Experiments.AWS_HOST) Int.MAX_VALUE else config.cores)
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
@@ -358,7 +360,12 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
         "reference runs stay on the lab machine, which has the reference solvers"
     }
     require(spec.problemList.isEmpty()) { "an AWS experiment selects its problems" }
-    spec.machines?.let { require(it in 1..aws.maxInstances) { "machines must be between 1 and ${aws.maxInstances}" } }
+    val cores = Experiments.arms(spec).maxOf { it.cores }
+    val size = requireNotNull(aws.sizeFor(cores)) {
+        "its cases need $cores cores; the largest instance within the ${aws.vcpuQuota}-vCPU quota has ${aws.sizes.last().cores}"
+    }
+    val most = aws.vcpuQuota / size.vcpus
+    spec.machines?.let { require(it in 1..most) { "machines must be between 1 and $most for ${size.type} within the quota" } }
 }
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */

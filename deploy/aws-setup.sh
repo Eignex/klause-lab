@@ -2,7 +2,8 @@
 # One-time AWS setup for running experiments with "host": "aws". Run it once, from a machine with an admin AWS session
 # (`aws login`) that can ssh to the lab Mac:
 #   deploy/aws-setup.sh [user@lab-host]          default rasmusros@192.168.50.104
-# Settings: AWS_REGION (default eu-north-1), INSTANCE_TYPE (default c7i.2xlarge), MAX_INSTANCES (default 4: the account's default quota of 32 vCPUs on demand fits four 8-vCPU instances),
+# Settings: AWS_REGION (default eu-north-1), INSTANCE_TYPE (default c7i.2xlarge, the smallest size a job gets),
+# VCPU_QUOTA (default 32, the account's on-demand quota), MAX_INSTANCES (default 4: the account's default quota of 32 vCPUs on demand fits four 8-vCPU instances),
 # ADMIN_PROFILE (default: the CLI's default profile).
 #
 # It creates, or reuses when they exist:
@@ -19,6 +20,11 @@ host="${1:-rasmusros@192.168.50.104}"
 region="${AWS_REGION:-eu-north-1}"
 type="${INSTANCE_TYPE:-c7i.2xlarge}"
 max="${MAX_INSTANCES:-4}"
+quota="${VCPU_QUOTA:-32}"
+# The sizes of the family a job may get, by the cores its cases need, as far as the vCPU quota reaches.
+family="${type%%.*}"
+types="$(for size in 2xlarge:8 4xlarge:16 8xlarge:32 12xlarge:48 16xlarge:64; do
+  [[ ${size#*:} -le $quota ]] && printf '"%s.%s",' "$family" "${size%%:*}"; done | sed 's/,$//')"
 name=klause-lab
 admin=(aws --region "$region" --output text ${ADMIN_PROFILE:+--profile "$ADMIN_PROFILE"})
 work="$(mktemp -d)"
@@ -94,7 +100,7 @@ cat > "$work/policy.json" <<EOF
                 "ec2:DescribeSecurityGroups", "ec2:DescribeKeyPairs"]},
     {"Sid": "LaunchTaggedInstances", "Effect": "Allow", "Action": "ec2:RunInstances",
      "Resource": "arn:aws:ec2:$region:$account:instance/*",
-     "Condition": {"StringEquals": {"aws:RequestTag/$name": "true", "ec2:InstanceType": "$type"}}},
+     "Condition": {"StringEquals": {"aws:RequestTag/$name": "true", "ec2:InstanceType": [$types]}}},
     {"Sid": "LaunchTaggedVolumes", "Effect": "Allow", "Action": "ec2:RunInstances",
      "Resource": "arn:aws:ec2:$region:$account:volume/*",
      "Condition": {"StringEquals": {"aws:RequestTag/$name": "true"}}},
@@ -134,6 +140,7 @@ region=$region
 profile=$name
 instanceType=$type
 maxInstances=$max
+vcpuQuota=$quota
 keyName=$name
 keyFile=/Users/$(ssh "$host" whoami)/klause-lab-data/aws/$name.pem
 securityGroup=$sg

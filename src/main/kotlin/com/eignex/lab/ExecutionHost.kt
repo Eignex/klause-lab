@@ -12,6 +12,9 @@ interface ExecutionHost {
     /** Cores the running cases may hold together. */
     val cores: Int
 
+    /** The most cases it runs at once, whatever a job asks for: memory bounds this on the lab machine, cores on AWS. */
+    val maxParallel: Int
+
     /** The corpus cache as the cases see it. */
     val corpus: String
 
