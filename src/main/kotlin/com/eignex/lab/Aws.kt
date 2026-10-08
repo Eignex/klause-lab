@@ -338,10 +338,12 @@ class AwsWorker(
                         val machines = want.coerceIn(1, free)
                         busy.addAndGet(machines)
                         thread(name = "aws-${job.id}") {
+                            // What the job holds of the reservation: less once AWS gave it fewer than it asked for.
+                            val held = AtomicInteger(machines)
                             try {
-                                work(job, machines)
+                                work(job, machines) { launched -> busy.addAndGet(-(held.getAndSet(launched) - launched)) }
                             } finally {
-                                busy.addAndGet(-machines)
+                                busy.addAndGet(-held.get())
                             }
                         }
                     }
@@ -365,7 +367,7 @@ class AwsWorker(
         }
     }
 
-    private fun work(claimed: Job, machines: Int) {
+    private fun work(claimed: Job, machines: Int, launched: (Int) -> Unit) {
         val dir = config.jobDir(claimed.id).createDirectories()
         val log = dir.resolve("setup.log").toFile().apply { appendText("") }
         val instances = ArrayList<String>()
@@ -375,6 +377,8 @@ class AwsWorker(
             val (arms, shas) = runner.resolveArms(job, spec, log)
             val primary = shas.getValue(arms.first().ref)
             val hosts = launch(job, machines, instances)
+            // A job that got fewer instances than it reserved hands the rest back, so the next job can use them.
+            launched(hosts.size)
             parallelOn(hosts) { host -> setup(job, host, shas.values.distinct(), log) }
             if (job.commands.isEmpty()) {
                 runner.log(job.id, "${hosts.first().instance}: planning, which fetches the corpora the selections read")
@@ -440,7 +444,7 @@ class AwsWorker(
             for (n in 0 until machines) {
                 // AWS refusing more for a quota or a lack of capacity is not a reason to fail a job that already has
                 // instances: it runs on those. Without any, the launch is retried like any other step.
-                val id = runCatching { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }.getOrElse { e ->
+                val id = runCatching { launchWhenCapacity(job, n, userData) }.getOrElse { e ->
                     if (instances.isNotEmpty() && CAPACITY.containsMatchIn(e.message.orEmpty())) {
                         runner.log(job.id, "AWS gave no more instances (${CAPACITY.find(e.message.orEmpty())?.value}); running on ${instances.size}")
                         break
@@ -462,6 +466,18 @@ class AwsWorker(
             }
         }
     }
+
+    /**
+     * Launch one instance, retrying for a couple of minutes while AWS refuses for a quota or a lack of capacity: instances
+     * a job just terminated hold their vCPUs against the quota for a minute or so after it ended.
+     */
+    private fun launchWhenCapacity(job: Job, n: Int, userData: File): String =
+        retrying(
+            CAPACITY_WAIT,
+            onRetry = { _, wait, e -> if (!CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
+                runner.log(job.id, "AWS is short of capacity for another instance; trying again in ${wait / MS_PER_SEC} s") },
+            sleep = { wait -> check(!store.cancelRequested(job.id)) { "cancelled" }; Thread.sleep(wait) },
+        ) { cli.launch(job.id, "klause-lab-${job.id}-$n", userData) }
 
     /** Wait for [host]'s bootstrap, then clone the repository and build each of [shas] on it. */
     private fun setup(job: Job, host: AwsHost, shas: List<String>, log: File) {
@@ -571,6 +587,10 @@ class AwsWorker(
         private const val BUILD_TIMEOUT_SEC = 3600L
         private const val MINUTES_PER_HOUR = 60
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */
+        /** Retries of a launch AWS refused for capacity: every 30 s for about two minutes. */
+        private val CAPACITY_WAIT = Backoff(attempts = 5, baseMs = 30_000, maxMs = 30_000)
+        private const val MS_PER_SEC = 1000L
+
         private val BOOT_WAIT = Backoff(attempts = 45, baseMs = 20_000, maxMs = 20_000)
     }
 }
