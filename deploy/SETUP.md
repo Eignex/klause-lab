@@ -237,10 +237,13 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   c7i.2xlarge running one case, or 8 cores per case a c7i.4xlarge. The job page shows its shape, e.g.
   `4 × c7i.2xlarge, 2 cases each`.
 - A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
+  SSH remembers each host key by region and EC2 instance ID, since AWS reuses public addresses after termination.
+  A new instance at a reused address may enroll its key; a changed key on the same instance is refused.
   It plans on the first, and the others fetch the same corpora before cases start. The instances share the job's
   problems: each takes the next one in plan order whenever it has room for a case, and a problem's arms, seeds and
   repeats all run on the instance that took it, so each comparison is made on one machine and no instance idles while
-  another has a backlog. An instance added later builds and fetches the same way, then takes problems too. Each instance runs `parallel` cases at once (default one per two physical cores) over SSH under
+  another has a backlog. An instance added later builds and fetches the same way, then takes problems too. Each instance
+  runs `parallel` cases at once (default one per two physical cores) over SSH under
   `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
   local job.
 - Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per two physical cores, is the
