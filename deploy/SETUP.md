@@ -55,6 +55,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page or `lab fetch`.
   Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
   command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
+  A profiling job stays on AWS with a parallel limit of one when it is edited through the client or API.
   These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
   at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
   RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted

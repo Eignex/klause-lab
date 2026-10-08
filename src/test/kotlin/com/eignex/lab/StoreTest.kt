@@ -5,6 +5,7 @@ import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class StoreTest {
@@ -83,6 +84,30 @@ class StoreTest {
         store.setParallel(id, 4)
 
         assertEquals(4, store.parallel(id))
+    }
+
+    @Test
+    fun `a profiling job retains serial execution when its parallel limit is edited`() {
+        val store = store()
+        val experiment = ExperimentSpec("profile", listOf(mapOf("suite" to "miplib2017")),
+            parallel = 1, host = "aws", profileCli = true)
+        val id = store.create("profile", "main", listOf("true" to 10L), parallel = 1, experiment = experiment)
+
+        assertFailsWith<IllegalArgumentException> { store.setParallel(id, 6) }
+
+        assertEquals(1, store.parallel(id))
+    }
+
+    @Test
+    fun `a queued profiling job cannot move to the local host`() {
+        val store = store()
+        val experiment = ExperimentSpec("profile", listOf(mapOf("suite" to "miplib2017")),
+            parallel = 1, host = "aws", profileCli = true)
+        val id = store.create("profile", "main", emptyList(), parallel = 1, experiment = experiment)
+
+        assertFailsWith<IllegalArgumentException> { store.setHost(id, "lab", null) }
+
+        assertEquals("aws", store.job(id)!!.experiment!!.host)
     }
 
     @Test
