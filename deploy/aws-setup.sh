@@ -24,7 +24,7 @@ quota="${VCPU_QUOTA:-32}"
 # The sizes of the family a job may get, by the cores its cases need, as far as the vCPU quota reaches.
 family="${type%%.*}"
 types="$(for size in 2xlarge:8 4xlarge:16 8xlarge:32 12xlarge:48 16xlarge:64; do
-  [[ ${size#*:} -le $quota ]] && printf '"%s.%s",' "$family" "${size%%:*}"; done | sed 's/,$//')"
+  if [[ ${size#*:} -le $quota ]]; then printf '"%s.%s",' "$family" "${size%%:*}"; fi; done | sed 's/,$//')"
 name=klause-lab
 admin=(aws --region "$region" --output text ${ADMIN_PROFILE:+--profile "$ADMIN_PROFILE"})
 work="$(mktemp -d)"
