@@ -219,24 +219,23 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   it launches another instance, up to its `machines`, as long as it has problems no instance has taken. An instance
   with no problem left to take is terminated at once, so its vCPUs go to the jobs still running or waiting.
 - An instance's size follows the job's arms: the smallest size of the family (`c7i.2xlarge`, `4xlarge`, `8xlarge`)
-  with as many physical cores as the arm with the most `processors` needs for one case. Each instance runs as many
-  cases at once as it has physical cores, a case holding its `processors` of them, unless the spec sets `parallel`,
-  which on AWS counts per instance. So single-core arms run 4 cases on each c7i.2xlarge, and a 4-core portfolio gets
-  a c7i.2xlarge running one case, or 8 cores per case a c7i.4xlarge. The job page shows its shape, e.g.
-  `4 × c7i.2xlarge, 4 cases each`.
+  with as many physical cores as the arm with the most `processors` needs for one case. Each instance runs one case
+  per two physical cores, a case holding its `processors` of them, unless the spec sets `parallel`, which on AWS
+  counts per instance. So single-core arms run 2 cases on each c7i.2xlarge, and a 4-core portfolio gets a
+  c7i.2xlarge running one case, or 8 cores per case a c7i.4xlarge. The job page shows its shape, e.g.
+  `4 × c7i.2xlarge, 2 cases each`.
 - A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
   It plans on the first, and the others fetch the same corpora before cases start. The instances share the job's
   problems: each takes the next one in plan order whenever it has room for a case, and a problem's arms, seeds and
   repeats all run on the instance that took it, so each comparison is made on one machine and no instance idles while
-  another has a backlog. An instance added later builds and fetches the same way, then takes problems too. Each instance runs `parallel` cases at once (default `cores`, one per physical core) over SSH under
+  another has a backlog. An instance added later builds and fetches the same way, then takes problems too. Each instance runs `parallel` cases at once (default one per two physical cores) over SSH under
   `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
   local job.
-- Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per physical core, is the
-  controlled setting: four solves on four physical cores leave every hyperthread pair one solve, the 16 GiB of a
-  c7i.2xlarge holds four `-Xmx3g` solves, and a problem's arms run on the same instance, so a comparison never spans
-  machines. `parallel=1` does not make an experiment more controlled; it only leaves three of four cores idle and
-  takes four times as long. Set it below the cores only for an arm that needs more memory per case than a quarter of
-  the instance. Likewise, don't keep `machines` low to spare the quota: the worker shares it between jobs on its own,
+- Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per two physical cores, is the
+  controlled setting: each case is a bench JVM driving a solver JVM, whose JIT compiler and garbage collector threads
+  need the second core, and a problem's arms run on the same instance, so a comparison never spans machines.
+  `parallel=1` does not make an experiment more controlled; it only leaves half the instance idle and takes twice as
+  long. Set it lower only for an arm that needs more memory per case than half the instance. Likewise, don't keep `machines` low to spare the quota: the worker shares it between jobs on its own,
   and a job waits for vCPUs rather than failing. Use as many instances as the job has problems to spread over, up to
   `maxInstances`.
 - The queue and history show where each job runs (Mac or AWS, and a running AWS job's instance count), and a queued

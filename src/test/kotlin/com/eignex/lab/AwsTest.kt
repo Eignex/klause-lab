@@ -97,6 +97,13 @@ class AwsTest {
     }
 
     @Test
+    fun `an AWS job runs one case per two physical cores unless it says otherwise`() {
+        val sizes = listOf(InstanceSize("c7i.large", 2), InstanceSize("c7i.2xlarge", 8), InstanceSize("c7i.4xlarge", 16))
+
+        assertEquals(listOf(1, 2, 4), sizes.map { AwsWorker.defaultParallel(it) })
+    }
+
+    @Test
     fun `an AWS job's machine count changes until it ends`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, description = "d")

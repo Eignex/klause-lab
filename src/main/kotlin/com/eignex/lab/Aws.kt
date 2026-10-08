@@ -516,9 +516,9 @@ class AwsWorker(
             val selections = spec.problems.map { Experiments.selectArgs(it) }
             parallelOn(hosts.drop(1)) { host -> fetchCorpora(host, primary, selections) }
             store.setup(job.id, primary)
-            // Unset, a job runs as many cases on each instance as it has physical cores; the core budget then fits
-            // cases that need several of them.
-            if (spec.parallel == null) store.setParallel(job.id, size.cores)
+            // Unset, a job runs one case per two physical cores of an instance: each case is a bench JVM driving a
+            // solver JVM, and their JIT and GC threads take the rest. The core budget then fits cases that need more.
+            if (spec.parallel == null) store.setParallel(job.id, defaultParallel(size))
             val problems = ProblemQueue(store.cases(job.id))
             runner.log(job.id, "running ${problems.size} problems on ${hosts.size} instances, each taking the next problem as it has room")
             val fleet = Fleet(job, dir, size, held, instances, problems) { host ->
@@ -796,6 +796,9 @@ class AwsWorker(
     """.trimIndent() + "\n"
 
     companion object {
+        /** Cases an instance of [size] runs at once when a job sets no `parallel`: one per two physical cores. */
+        internal fun defaultParallel(size: InstanceSize): Int = (size.cores / 2).coerceAtLeast(1)
+
         /** The job's running instances, one id a line, while it has them: what the pages show. */
         const val INSTANCES_FILE = "aws-instances"
 
