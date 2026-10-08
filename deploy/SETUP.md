@@ -50,6 +50,15 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `host`: `aws` or `lab` (see Running on AWS), and for `aws`, `machines`: how many instances to split it over. Left out,
   an experiment runs on AWS when the lab has AWS settings and AWS can run it (klause arms only, selected problems,
   cores within the largest instance), and on the lab machine otherwise; a schedule's runs default to the lab machine.
+- `profileCli: true` (AWS only, with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings
+  and measures its physical peak RSS and user/system CPU with GNU time. Each case returns `cli.jfr`, `resources.txt`
+  and `measurement.json` under `cases/<index>/profile-<attempt>/`, accessible through the job's Files page or `lab fetch`.
+  These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
+  at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
+  RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted
+  recordings are measurement failures. A dropped artifact transfer retries that transfer without re-solving the case.
+  Profiling changes generated launch scripts only on that job's instances, after build caching; solver jars and the
+  baseline revision are unchanged. Killing the timer kills its CLI child through Linux's parent-death signal.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own

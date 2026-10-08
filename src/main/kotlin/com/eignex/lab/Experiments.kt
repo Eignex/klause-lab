@@ -49,6 +49,8 @@ data class ExperimentSpec(
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
     val description: String = "",
+    /** AWS-only whole-CLI JFR and physical resource measurements, returned with each case's files. */
+    val profileCli: Boolean = false,
 )
 
 /** One configuration of an experiment: its [label] and the solve arguments, `ref` included. */
@@ -139,6 +141,8 @@ object Experiments {
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
+        require(!spec.profileCli || spec.host == AWS_HOST) { "profileCli requires host=aws" }
+        require(!spec.profileCli || spec.parallel == 1) { "profileCli requires parallel=1" }
         require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
         arms(spec).firstOrNull { it.cores > cores }?.let { require(false) { "arm '${it.label}' asks for ${it.cores} processors; the lab has $cores cores" } }
         require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }

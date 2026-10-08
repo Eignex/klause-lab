@@ -90,6 +90,18 @@ class ExperimentsTest {
     }
 
     @Test
+    fun `CLI profiling requires an explicit serial AWS experiment`() {
+        val experiment = spec().copy(profileCli = true)
+
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> {
+            Experiments.validate(experiment.copy(host = "aws"), maxParallel = 4)
+        }
+        Experiments.validate(experiment.copy(host = "aws", parallel = 1), maxParallel = 4)
+        assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(experiment))
+    }
+
+    @Test
     fun `exact policy is validated and forwarded to each case`() {
         for (exact in listOf("true", "false")) {
             val experiment = spec(base = mapOf("exact" to exact))
