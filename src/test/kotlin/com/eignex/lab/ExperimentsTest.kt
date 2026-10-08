@@ -19,7 +19,8 @@ class ExperimentsTest {
                 val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
                 bench.parentFile.mkdirs()
                 val help = if (supported) "bench provenance out=<file>" else "bench solve-one"
-                bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo '$help';; provenance) pwd > \"\${2#out=}\";; esac\n")
+                // A bench's --help exits 1, as klause-bench's does, whether or not it can write a manifest.
+                bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo '$help'; exit 1;; provenance) pwd > \"\${2#out=}\";; esac\n")
                 bench.setExecutable(true)
 
                 val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path))

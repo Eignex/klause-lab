@@ -241,11 +241,15 @@ object Experiments {
             "exec ./build/install/klause-bench/bin/klause-bench solve-one $args out=\"\$JOB_DIR/cases/$index\""
     }
 
+    /**
+     * A shell step writing the build's provenance manifest, for a bench that can: one that cannot leaves none, and a
+     * failing capture fails the build. A bench's `--help` exits non-zero on many revisions, so only its text counts.
+     */
     internal fun captureProvenance(worktree: String): String {
         val bench = quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")
         val manifest = quote("$worktree/klause-bench/build/provenance.json")
         return "(cd ${quote("$worktree/klause-bench")} && rm -f $manifest && " +
-            "help=\$($bench --help) && case \"\$help\" in " +
+            "help=\$($bench --help 2>&1 || true) && case \"\$help\" in " +
             "*'bench provenance out=<file>'*) $bench provenance ${quote("out=$worktree/klause-bench/build/provenance.json")};; " +
             "*) echo 'bench revision has no provenance manifest support';; esac)"
     }
