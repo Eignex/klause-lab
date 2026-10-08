@@ -17,10 +17,25 @@ class ResultsTest {
         val lines = Results.casesCsv(cases).lines()
         val fields = lines[1].split(',')
 
-        assertEquals(listOf("sourceValidation", "floatApproximation"), lines[0].split(',').takeLast(2))
+        assertEquals(listOf("sourceValidation", "floatApproximation"), lines[0].split(',').takeLast(4).take(2))
         assertEquals(listOf("", "", "false"), fields.slice(12..14))
-        assertEquals(listOf("invalid", "true"), fields.takeLast(2))
+        assertEquals(listOf("invalid", "true"), fields.takeLast(4).take(2))
         assertEquals("s,p,false,,,false,1000,1000,,,,,,", Results.benchCsv(cases, "a", null).lines()[1])
+    }
+
+    @Test
+    fun `case exports retain provenance and leave legacy fields absent`() {
+        val cases = listOf(
+            """{"buildFingerprint":"build-a","validationPolicy":"reported-result-v1"}""",
+            """{}""",
+        ).mapIndexed { index, record ->
+            CaseResult(index, Status.DONE, Problem("s", "p"), "a", null, Json.parseToJsonElement(record))
+        }
+
+        val rows = Results.casesCsv(cases).lines().take(3).map { it.split(',').takeLast(2) }
+
+        assertEquals(listOf(listOf("buildFingerprint", "validationPolicy"),
+            listOf("build-a", "reported-result-v1"), listOf("", "")), rows)
     }
 
     @Test

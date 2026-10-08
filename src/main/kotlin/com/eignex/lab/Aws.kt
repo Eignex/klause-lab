@@ -751,6 +751,7 @@ class AwsWorker(
                     appendLine("  tar -C $worktree -c klause-cli/build/install klause-bench/build/install | zstd -q -T0 | aws s3 cp - $archive --region ${aws.region} --only-show-errors || true")
                     appendLine("fi")
                 }
+                appendLine(Experiments.captureProvenance(worktree))
             }
             if (bucket != null) {
                 appendLine("if [ ${'$'}built = 1 ]; then tar -C ~ -c .gradle/caches/modules-2 .gradle/wrapper 2>/dev/null | zstd -q -T0 | aws s3 cp - s3://$bucket/$GRADLE_ARCHIVE --region ${aws.region} --only-show-errors || true; fi")

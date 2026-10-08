@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.json.Json
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -19,6 +20,26 @@ import kotlin.test.assertTrue
 
 class PagesTest {
     private val host = HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")
+
+    @Test
+    fun `arm pages show mixed provenance and missing legacy identities`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val cases = listOf(
+            """{"buildFingerprint":"build-a","validationPolicy":"source-v1"}""",
+            """{"buildFingerprint":"build-b","validationPolicy":"reported-v1"}""",
+            """{}""",
+        ).mapIndexed { index, record ->
+            CaseResult(index, Status.DONE, Problem("s", "p$index"), "a", null, Json.parseToJsonElement(record))
+        }
+        val arms = listOf(PlannedArm(Arm("a", emptyMap()), "abc"))
+
+        val page = comparePage(config, emptyList(), arms, cases)
+
+        assertContains(page, "mixed provenance")
+        assertContains(page, "build-a")
+        assertContains(page, "source-v1")
+        assertContains(page, "records missing provenance: 1")
+    }
 
     @Test
     fun `a commit links to github only for a github repository`() {
