@@ -170,6 +170,7 @@ class AwsCli(private val aws: AwsConfig) {
 
 /** An instance as the lab reaches it: SSH as `ubuntu`, with the lab's key, in the background. */
 class Ssh(
+    private val instance: String,
     private val ip: String,
     private val aws: AwsConfig,
     private val knownHosts: Path,
@@ -181,6 +182,8 @@ class Ssh(
         "ssh", "-i", aws.keyFile,
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "HostKeyAlias=klause-lab-${aws.region}-$instance",
+        "-o", "CheckHostIP=no",
         "-o", "UserKnownHostsFile=$knownHosts",
         "-o", "ConnectTimeout=15",
         "-o", "ServerAliveInterval=30",
@@ -738,7 +741,7 @@ class AwsWorker(
         return new.map { id ->
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
-            AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
+            AwsHost(id, Ssh(id, ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
                 job.experiment?.profileCli == true) {
                 store.cancelRequested(job.id)
             }
