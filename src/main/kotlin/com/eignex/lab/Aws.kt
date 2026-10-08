@@ -379,10 +379,10 @@ class AwsHost(
                 files.resolve("solve-record.json").toFile().writeText(snapshot)
                 MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
             }
-            for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
             files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
                 CliMeasurementManifest.serializer(), CliMeasurementManifest(
                     i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions, recordHash)))
+            for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
         }
         return result
     }
