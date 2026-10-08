@@ -47,7 +47,9 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
-- `host`: `lab` (default) or `aws` (see Running on AWS), and for `aws`, `machines`: how many instances to split it over.
+- `host`: `aws` or `lab` (see Running on AWS), and for `aws`, `machines`: how many instances to split it over. Left out,
+  an experiment runs on AWS when the lab has AWS settings and AWS can run it (klause arms only, selected problems,
+  cores within the largest instance), and on the lab machine otherwise; a schedule's runs default to the lab machine.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own

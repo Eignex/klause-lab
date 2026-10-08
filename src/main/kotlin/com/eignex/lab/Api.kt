@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.DefaultJson
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.http.withCharset
 import io.ktor.server.application.Application
@@ -24,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.TimeUnit
@@ -97,7 +99,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
-            val spec = call.receive<ExperimentSpec>()
+            // An experiment that names no host runs on AWS whenever it can there, and on the lab machine otherwise.
+            val body = call.receive<JsonObject>()
+            val given = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body)
+            val spec = if ("host" in body) given else given.copy(host = defaultHost(given, config))
             requireDescription(spec)
             requireHost(spec, config)
             // An AWS job's cores are checked against the instance sizes, in requireHost; parallel there is per instance.
@@ -381,6 +386,11 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
     val most = aws.vcpuQuota / size.vcpus
     spec.machines?.let { require(it in 1..most) { "machines must be between 1 and $most for ${size.type} within the quota" } }
 }
+
+/** AWS when [spec] could run there, see [requireHost]; the lab machine otherwise. */
+private fun defaultHost(spec: ExperimentSpec, config: Config): String =
+    runCatching { requireHost(spec.copy(host = Experiments.AWS_HOST), config) }
+        .fold({ Experiments.AWS_HOST }, { Experiments.LAB_HOST })
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */
 private fun requireDescription(spec: ExperimentSpec) = require(spec.description.isNotBlank()) {

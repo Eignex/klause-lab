@@ -38,7 +38,10 @@ data class ExperimentSpec(
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
-    /** Where the cases run: `lab`, the lab machine, or `aws`, EC2 instances the lab launches for the job. */
+    /**
+     * Where the cases run: `lab`, the lab machine, or `aws`, EC2 instances the lab launches for the job. A submitted
+     * experiment that leaves it out runs on AWS when it can there; a schedule's runs stay on the lab machine.
+     */
     val host: String = Experiments.LAB_HOST,
     /** For `aws`: how many instances to split the job over, by problem; unset, as many as are free. */
     val machines: Int? = null,
