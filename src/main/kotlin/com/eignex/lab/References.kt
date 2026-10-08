@@ -194,12 +194,12 @@ object References {
                 val refObjective = reference.objective
                 if (reference.proven && refObjective != null) {
                     provenOptima++
-                    if (best == refObjective) optimaMatched++
+                    if (best != null && same(best, refObjective)) optimaMatched++
                 }
                 if (best != null && refObjective != null) {
-                    val beats = if (maximize) best > refObjective else best < refObjective
+                    val beats = better(best, refObjective, maximize)
                     if (beats && !reference.proven) better++
-                    if (!beats && best != refObjective) {
+                    if (!beats && !same(best, refObjective)) {
                         val gap = abs(best - refObjective) / maxOf(abs(refObjective), 1.0)
                         gaps += gap
                         shortfalls += Shortfall(problem, label, best, refObjective, reference.proven, gap)
@@ -215,7 +215,7 @@ object References {
                     disagreements += Disagreement(problem, "$label solved it, ${reference.solver} proved it infeasible")
                 }
                 val armOptimum = runs.firstOrNull { it.proven && it.feasible == true && it.objective != null }?.objective
-                if (armOptimum != null && reference.proven && refObjective != null && armOptimum != refObjective) {
+                if (armOptimum != null && reference.proven && refObjective != null && !same(armOptimum, refObjective)) {
                     disagreements += Disagreement(problem, "$label proves optimum $armOptimum, ${reference.solver} proves $refObjective")
                 }
             }
@@ -235,10 +235,10 @@ object References {
             for (b in rows.filter { it.solver != a.solver }) {
                 if (a.feasible == false && a.proven && b.feasible == true) add("${a.solver} proves infeasible, ${b.solver} found a solution")
                 val (x, y) = a.objective to b.objective
-                if (a.solver < b.solver && a.proven && b.proven && x != null && y != null && x != y) {
+                if (a.solver < b.solver && a.proven && b.proven && x != null && y != null && !same(x, y)) {
                     add("${a.solver} proves optimum ${fmt(x)}, ${b.solver} proves ${fmt(y)}")
                 }
-                if (a.proven && x != null && !b.proven && y != null && (if (a.maximize) y > x else y < x)) {
+                if (a.proven && x != null && !b.proven && y != null && better(y, x, a.maximize)) {
                     add("${b.solver}'s solution ${fmt(y)} beats ${a.solver}'s proven optimum ${fmt(x)}")
                 }
             }
@@ -246,6 +246,20 @@ object References {
     }.distinct()
 
     private fun fmt(x: Double) = if (x == Math.rint(x) && abs(x) < 1e15) x.toLong().toString() else x.toString()
+
+    /**
+     * Whether two objectives are the same optimum: within a relative [REL_TOLERANCE] (an absolute [ABS_TOLERANCE] near
+     * zero). Solvers print floating-point objectives with noise (1479.99999999 for 1480), and a MIP solver calls a
+     * solution optimal once its bound is within a relative gap of it, 1e-4 by default in HiGHS, so two proofs of one
+     * optimum can differ by that much.
+     */
+    fun same(a: Double, b: Double): Boolean = abs(a - b) <= maxOf(ABS_TOLERANCE, REL_TOLERANCE * maxOf(abs(a), abs(b)))
+
+    /** Whether [x] is better than [than] by more than [same] allows, in the [maximize] sense. */
+    fun better(x: Double, than: Double, maximize: Boolean): Boolean = !same(x, than) && if (maximize) x > than else x < than
+
+    private const val REL_TOLERANCE = 1e-4
+    private const val ABS_TOLERANCE = 1e-6
 
     private fun abs(x: Double) = kotlin.math.abs(x)
 }

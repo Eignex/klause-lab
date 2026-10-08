@@ -60,6 +60,16 @@ class ReferencesTest {
     }
 
     @Test
+    fun `optima within the solvers' tolerance agree, and only a real difference conflicts`() {
+        val scip = Reference("scip", false, 1480.0, true, true, 10, 60_000)
+
+        assertEquals(emptyList(), References.conflicts(listOf(scip, scip.copy(solver = "highs", objective = 1479.99999999))))
+        assertEquals(emptyList(), References.conflicts(listOf(scip.copy(objective = -2451377.0), scip.copy(solver = "highs", objective = -2451279.0))))
+        assertEquals(listOf("highs proves optimum 1470, scip proves 1480"),
+            References.conflicts(listOf(scip, scip.copy(solver = "highs", objective = 1470.0))))
+    }
+
+    @Test
     fun `a filter keeps the rows of its solver and verdict, and counts them all`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         store.putReferences(
