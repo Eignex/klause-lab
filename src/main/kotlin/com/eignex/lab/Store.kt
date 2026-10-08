@@ -332,7 +332,7 @@ class Store(file: Path) {
                 if (!rows.next()) return@generateSequence null
                 CaseResult(
                     rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
-                    rows.getString(4), rows.longOrNull("seed"), rows.getString(6)?.let { Json.parseToJsonElement(it) },
+                    rows.getString(4), rows.longOrNull("seed"), rows.getString(6)?.let(::recordOf),
                     rows.getInt(7),
                 )
             }.toList()
@@ -589,7 +589,7 @@ class Store(file: Path) {
                 ProblemRun(
                     job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
                     sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
-                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let { Json.parseToJsonElement(it) },
+                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let(::recordOf),
                 )
             }.toList()
         }
@@ -861,3 +861,6 @@ private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
+
+/** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
+internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()

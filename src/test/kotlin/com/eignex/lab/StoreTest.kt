@@ -128,6 +128,19 @@ class StoreTest {
     }
 
     @Test
+    fun `a stored record that does not parse reads as missing instead of failing`() {
+        val store = store()
+        val problems = listOf(Problem("s", "a"), Problem("s", "b"))
+        val id = store.create("e", "main", emptyList(), experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s"))))
+        store.next()
+        store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(2, 1, emptyList()), problems.map { "true" to 1L })
+        store.caseRecord(id, 0, """{"kind":"satisfy","budgetMs":1000}""")
+        store.caseRecord(id, 1, """{"kind":"satisfy","conTimeout, server 1.2.3.4 not responding.""")
+
+        assertEquals(listOf(true, false), store.cases(id).map { it.record != null })
+    }
+
+    @Test
     fun `the highest priority queued job is taken first`() {
         val store = store()
         store.create("low", "main", listOf("true" to 10L))

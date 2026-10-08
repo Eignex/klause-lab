@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -159,7 +160,11 @@ class Ssh(
         "bash -c ${quote(script)}",
     )
 
-    fun start(script: String): Process = ProcessBuilder(command(script)).redirectErrorStream(true).start()
+    /** Start [script]; with [mergeErrors] off, SSH's own messages and the remote shell's stderr are left out of the
+     *  output, as a case's record must be: a "Timeout, server not responding" once landed in the middle of one. */
+    fun start(script: String, mergeErrors: Boolean = true): Process = ProcessBuilder(command(script))
+        .apply { if (mergeErrors) redirectErrorStream(true) else redirectError(ProcessBuilder.Redirect.DISCARD) }
+        .start()
 
     /** Run [script] to its end, at most [timeoutSec]; its exit (255 when SSH itself failed) and its output. */
     fun exec(script: String, timeoutSec: Long): Pair<Int, String> {
@@ -258,7 +263,7 @@ class AwsHost(
             echo "$RECORD"
             cat ${'$'}JOB_DIR/cases/$i/*.json 2>/dev/null || true
         """.trimIndent()
-        val process = ssh.start(script)
+        val process = ssh.start(script, mergeErrors = false)
         val output = StringBuilder()
         val reader = thread(isDaemon = true) { output.append(process.inputStream.bufferedReader().readText()) }
         val deadline = System.currentTimeMillis() + (command.timeoutSec + SSH_GRACE_SEC) * MS_PER_SEC
@@ -274,6 +279,10 @@ class AwsHost(
         val exit = Regex("""(?m)^exit=(\d+)$""").find(text)?.groupValues?.get(1)?.toInt()
             ?: throw SshDropped("case $i on $instance: no exit reported (ssh exit ${process.exitValue()}): ${text.takeLast(ERROR_CHARS)}")
         val record = text.substringAfter("$RECORD\n", "").trim()
+        // A record cut or garbled on the way back is a dropped connection, rerun as one, never stored.
+        if (record.isNotEmpty() && runCatching { Json.parseToJsonElement(record) }.isFailure) {
+            throw SshDropped("case $i on $instance: its record came back garbled")
+        }
         if (record.isNotEmpty()) {
             dir.resolve("cases").resolve(i.toString()).createDirectories().resolve("record.json").toFile().writeText(record)
         }

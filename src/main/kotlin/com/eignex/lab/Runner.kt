@@ -409,6 +409,7 @@ class Runner(private val config: Config, private val store: Store) {
         val record = dir.resolve(CASES).resolve(index.toString()).toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()
         runCatching {
             val text = record?.readText() ?: return@runCatching
+            Json.parseToJsonElement(text) // a record that does not parse is not kept: it would break every page that reads it
             store.caseRecord(jobId, index, text)
             promote(jobId, index, text)
         }.onFailure { log(jobId, "case $index: record not kept: ${it.message}") }
