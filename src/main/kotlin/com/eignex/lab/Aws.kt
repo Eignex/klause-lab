@@ -363,13 +363,20 @@ class AwsHost(
         }
         val result = if (exit == TIMEOUT_EXIT_CODE) TIMEOUT else exit
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
+        for (suffix in listOf("out", "err")) {
+            runCatching { ssh.download("$HOME/job/$i.$suffix", dir.resolve("$i.$suffix"), ARTIFACT_TRANSFER_SEC) }
+                .onFailure { error ->
+                    dir.resolve("$i.$suffix.transfer-error").toFile()
+                        .writeText("${error.message ?: error::class.simpleName}\n")
+                }
+        }
         if (profile != null) {
             val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
             val recordHash = record.takeIf { it.isNotEmpty() }?.let { snapshot ->
                 files.resolve("solve-record.json").toFile().writeText(snapshot)
                 MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
             }
-            for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), PROFILE_TRANSFER_SEC)
+            for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
             files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
                 CliMeasurementManifest.serializer(), CliMeasurementManifest(
                     i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions, recordHash)))
@@ -387,7 +394,7 @@ class AwsHost(
         private const val KILL_TIMEOUT_SEC = 30L
         private const val POLL_MS = 1000L
         private const val READ_WAIT_MS = 5_000L
-        private const val PROFILE_TRANSFER_SEC = 120L
+        private const val ARTIFACT_TRANSFER_SEC = 120L
         private const val MS_PER_SEC = 1000L
         private const val ERROR_CHARS = 2000
         private const val TIMEOUT_EXIT_CODE = 124
