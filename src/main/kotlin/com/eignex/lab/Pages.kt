@@ -609,10 +609,11 @@ private const val TREND_SCRIPT = """<script>
         el('circle', {cx: p[0], cy: p[1], r: 4, fill: p[2].finished ? s.color : 'var(--bg)', stroke: p[2].finished ? 'var(--bg)' : s.color,
           'stroke-width': 2}, svg);
       }
-      // A run that contradicts the reference is ringed on the first series, so a soundness bug shows at its commit.
-      if (s === series[0]) {
+      // A run that contradicts the reference is ringed where it does: on the solved chart, and on the chart of the
+      // suite its disagreeing problems are in, never on every chart.
+      if (s === series[0] && opts.flagged) {
         for (const p of pts) {
-          if (p[2].disagreements > 0) el('circle', {cx: p[0], cy: p[1], r: 8, fill: 'none', stroke: 'var(--bad)', 'stroke-width': 2}, svg);
+          if (opts.flagged(p[2])) el('circle', {cx: p[0], cy: p[1], r: 8, fill: 'none', stroke: 'var(--bad)', 'stroke-width': 2}, svg);
         }
       }
       if (opts.endLabels && pts.length) {
@@ -664,7 +665,8 @@ private const val TREND_SCRIPT = """<script>
       {name: 'solved', color: 'var(--series-1)', value: function (r) { return r.solved.value; },
         band: function (r) { return [r.solved.low, r.solved.high]; }},
       {name: 'proven', color: 'var(--series-2)', value: function (r) { return r.proven; }},
-    ], percentAxis, {height: 260, endLabels: true, title: 'Solved and proven share per run'});
+    ], percentAxis, {height: 260, endLabels: true, title: 'Solved and proven share per run',
+      flagged: function (r) { return r.disagreements > 0; }});
     const top = niceMax(Math.max.apply(null, runs.map(function (r) { return r.par2.high; })));
     draw(document.getElementById('chart-par2'), [
       {name: 'PAR-2', color: 'var(--series-1)', value: function (r) { return r.par2.value; },
@@ -682,7 +684,8 @@ private const val TREND_SCRIPT = """<script>
       grid.appendChild(cell);
       draw(plot, [{name: s, color: 'var(--series-1)', value: function (r) { return r.suites[s] ? r.suites[s].solved : null; }}],
         {max: 1, ticks: [0, 0.5, 1], fmt: function (v) { return Math.round(v * 100) + '%'; }},
-        {height: 130, endLabels: false, title: s + ' solved share per run', suite: s});
+        {height: 130, endLabels: false, title: s + ' solved share per run', suite: s,
+          flagged: function (r) { return (r.disagreementsBySuite[s] || 0) > 0; }});
     }
   }
 

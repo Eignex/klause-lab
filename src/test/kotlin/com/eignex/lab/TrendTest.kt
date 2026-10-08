@@ -37,7 +37,10 @@ class TrendTest {
         store.putReferences(listOf(("" to "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         run(store, "sweep@aaa", listOf(true, false))
 
-        assertEquals(listOf(1), Trend.runs(store, "sweep").map { it.disagreements })
+        val run = Trend.runs(store, "sweep").single()
+
+        assertEquals(listOf(1, 1), listOf(run.disagreements, run.disagreementsBySuite["a"]))
+        assertEquals(null, run.disagreementsBySuite["b"])
     }
 
     @Test

@@ -31,6 +31,8 @@ data class TrendRun(
     /** Problems where the run contradicts the reference: a proof against its solution, a solution beyond its proven
      *  optimum, a different proven optimum. Each is a soundness bug in one of them. */
     val disagreements: Int = 0,
+    /** [disagreements] by the suite of the problem each is on, so a suite's chart marks only its own. */
+    val disagreementsBySuite: Map<String, Int> = emptyMap(),
     /** Problems the run solved to a worse objective than the reference. */
     val worse: Int = 0,
     /** Against the run before it of the same experiment: problems lost and gained, and the sign test on them. Null for
@@ -112,6 +114,7 @@ object Trend {
             unsupported = summary.unsupported,
             errors = summary.errors,
             disagreements = comparison.disagreements.size,
+            disagreementsBySuite = comparison.disagreements.groupingBy { it.problem.suite.ifEmpty { "(none)" } }.eachCount(),
             worse = comparison.shortfalls.size,
             par2 = stats.par2,
             suites = suites,
