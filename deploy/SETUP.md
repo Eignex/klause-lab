@@ -184,7 +184,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
   `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` 4, which the account's default quota of 32 on-demand vCPUs fits, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
-  start the AWS worker.
+  start the AWS worker. After that the worker rereads it on every poll, so a raised `vcpuQuota` or a new
+  `maxInstances` applies to the next job without a restart.
 - The corpus cache lives in a private S3 bucket in the same region, `klause-lab-corpus-<account>-<region>`. An instance
   syncs it down while it builds (fast and free within the region) and, after planning, pushes back any collection it
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through

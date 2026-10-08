@@ -373,9 +373,14 @@ class AwsWorker(
     private val runner: Runner,
     private val store: Store,
     private val config: Config,
-    private val aws: AwsConfig,
+    initial: AwsConfig,
 ) {
-    private val cli = AwsCli(aws)
+    /** The settings, read again from `aws.properties` on every poll: a raised quota or a new default applies to the
+     *  next job without restarting the lab. */
+    @Volatile
+    private var aws: AwsConfig = initial
+    private val cli: AwsCli get() = AwsCli(aws)
+    private val settings = config.dataDir.resolve("aws").resolve("aws.properties")
     private val busy = AtomicInteger()
 
     /** Whether any AWS job is running: the runner holds off updating itself until none is, since a restart would end
@@ -388,6 +393,7 @@ class AwsWorker(
         runCatching { recover() }.onFailure { println("aws: recovery failed: ${it.message}") }
         var swept = System.currentTimeMillis()
         while (true) {
+            runCatching { AwsConfig.load(settings)?.let { aws = it } }.onFailure { println("aws: settings not reread: ${it.message}") }
             runCatching { claim() }.onFailure { println("aws: ${it.message}") }
             if (System.currentTimeMillis() - swept > SWEEP_MS) {
                 swept = System.currentTimeMillis()
