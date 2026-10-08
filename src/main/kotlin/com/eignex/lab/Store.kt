@@ -766,6 +766,16 @@ class Store(file: Path) {
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
     }
 
+    /** Set how many instances an AWS experiment that has not ended splits over, null for as many as are free. A running
+     *  job keeps the instances it launched: the number applies at its next launch, after a pause and resume. */
+    @Synchronized
+    fun setMachines(jobId: Long, machines: Int?): Boolean {
+        val job = job(jobId) ?: return false
+        val spec = job.experiment ?: return false
+        if (spec.host != Experiments.AWS_HOST || job.status !in ACTIVE) return false
+        return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(spec.copy(machines = machines)), jobId) == 1
+    }
+
     /** Set an experiment's description; false when there is no such experiment. */
     @Synchronized
     fun setDescription(jobId: Long, description: String): Boolean {

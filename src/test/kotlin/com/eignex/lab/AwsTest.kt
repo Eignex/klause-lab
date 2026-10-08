@@ -59,4 +59,14 @@ class AwsTest {
         assertEquals(listOf("c7i.2xlarge", "c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge", null),
             listOf(1, 4, 5, 16, 17).map { aws.sizeFor(it)?.type })
     }
+
+    @Test
+    fun `an AWS job's machine count changes until it ends`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, description = "d")
+        val queued = store.create("e", "main", emptyList(), experiment = spec)
+        val onLab = store.create("l", "main", emptyList(), experiment = spec.copy(host = Experiments.LAB_HOST))
+
+        assertEquals(listOf(true, 3, false), listOf(store.setMachines(queued, 3), store.job(queued)?.experiment?.machines, store.setMachines(onLab, 3)))
+    }
 }

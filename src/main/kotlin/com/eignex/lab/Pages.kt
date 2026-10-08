@@ -103,11 +103,16 @@ internal fun jobPage(
         append("<label>parallel <input id=\"parallel\" type=\"number\" min=\"1\" max=\"${config.maxParallel}\" value=\"${job.parallel}\"></label>")
         append("<button onclick=\"act('/jobs/$id/parallel', {parallel: +document.getElementById('parallel').value})\">set</button>")
         // A job changes host only before it is planned: its commands then name paths on the host that planned it.
+        if (job.experiment?.host == Experiments.AWS_HOST) {
+            // A running job keeps the instances it launched; the count applies when it next launches.
+            val later = if (job.status == Status.RUNNING) " (applies after a pause and resume)" else ""
+            append("<label>machines$later <input id=\"machines\" type=\"number\" min=\"1\" ")
+            append("max=\"${config.aws?.let { it.vcpuQuota / it.sizes.first().vcpus } ?: 1}\" ")
+            append("value=\"${job.experiment.machines ?: ""}\" placeholder=\"all free\"></label>")
+            append("<button onclick=\"act('/jobs/$id/machines', {machines: +document.getElementById('machines').value || null})\">set</button>")
+        }
         if (job.status == Status.QUEUED && job.commands.isEmpty() && job.experiment != null) {
             if (job.experiment.host == Experiments.AWS_HOST) {
-                append("<label>machines <input id=\"machines\" type=\"number\" min=\"1\" max=\"${config.aws?.let { it.vcpuQuota / it.sizes.first().vcpus } ?: 1}\" ")
-                append("value=\"${job.experiment.machines ?: ""}\" placeholder=\"all free\"></label>")
-                append("<button onclick=\"act('/jobs/$id/host', {host: 'aws', machines: +document.getElementById('machines').value || null})\">set</button>")
                 append("<button onclick=\"act('/jobs/$id/host', {host: 'lab'})\">run on the Mac</button>")
             } else if (config.aws != null) {
                 append("<button onclick=\"act('/jobs/$id/host', {host: 'aws'}, 'Run job $id on AWS instead of the Mac?')\">run on AWS</button>")

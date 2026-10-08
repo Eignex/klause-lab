@@ -18,6 +18,7 @@
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab host <id> lab|aws [machines]                        move a queued, unplanned experiment to the Mac or AWS
+#   lab machines <id> [n]                                    set an AWS job's instance count (none: as many as free)
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
@@ -79,6 +80,8 @@ check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
 update) curl -sS -X POST "$url/update"; echo ;;
 host) jq -n --arg host "$2" --argjson machines "${3:-null}" '{host: $host, machines: $machines}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/host"; echo ;;
+machines) jq -n --argjson machines "${2:-null}" '{machines: $machines}' |
+  curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/machines"; echo ;;
 describe) jq -n --arg description "${*:2}" '{description: $description}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/description"; echo ;;
 retry) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/retry"; echo; done ;;

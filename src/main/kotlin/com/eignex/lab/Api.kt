@@ -40,6 +40,9 @@ data class DescriptionSpec(val description: String)
 @Serializable
 data class HostSpec(val host: String, val machines: Int? = null)
 
+@Serializable
+data class MachinesSpec(val machines: Int? = null)
+
 /** An experiment rerun on every new commit of [ref]: each run is [experiment] with every arm at that commit. */
 @Serializable
 data class ScheduleSpec(
@@ -264,6 +267,17 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(
                 if (moved) HttpStatusCode.OK else HttpStatusCode.Conflict,
                 if (moved) "runs on ${spec.host}" else "only a queued job that has not been planned can change host",
+            )
+        }
+        post("/jobs/{id}/machines") {
+            val id = call.parameters["id"]!!.toLong()
+            val spec = call.receive<MachinesSpec>()
+            val experiment = requireNotNull(store.job(id)?.experiment) { "no such experiment" }
+            requireHost(experiment.copy(machines = spec.machines), config)
+            val set = store.setMachines(id, spec.machines)
+            call.respond(
+                if (set) HttpStatusCode.OK else HttpStatusCode.Conflict,
+                if (set) "machines ${spec.machines ?: "as many as are free"}" else "only an AWS job that has not ended takes a machine count",
             )
         }
         post("/jobs/{id}/description") {
