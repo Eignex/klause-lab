@@ -210,6 +210,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
 - The queue and history show where each job runs (Mac or AWS, and a running AWS job's instance count), and a queued
   job's place in its own host's queue. A queued job that has not been planned can move between the Mac and AWS from
   its page, or with `lab host <id> lab|aws [machines]`; once planned, its commands name paths on its host.
+  An AWS job's instance count can change until it ends, on its page or with `lab machines <id> [n]`: a queued or
+  paused job launches that many next; a running one keeps its instances until a pause and resume relaunch them.
 - The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
   instances.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
