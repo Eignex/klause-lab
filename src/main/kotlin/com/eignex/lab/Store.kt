@@ -156,8 +156,19 @@ class Store(file: Path) {
                     collection TEXT NOT NULL, problem TEXT NOT NULL, solver TEXT NOT NULL, maximize INTEGER NOT NULL,
                     objective REAL, feasible INTEGER, proven INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL,
                     budget_ms INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                    version TEXT NOT NULL DEFAULT '', validation TEXT, dual_bound REAL, stale INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (collection, problem, solver))""",
             )
+            val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
+            if ("version" !in columns) {
+                it.execute("ALTER TABLE reference_rows ADD COLUMN version TEXT NOT NULL DEFAULT ''")
+                it.execute("ALTER TABLE reference_rows ADD COLUMN validation TEXT")
+                it.execute("ALTER TABLE reference_rows ADD COLUMN dual_bound REAL")
+                it.execute("ALTER TABLE reference_rows ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
+                // The MPS references' rows from before their claims were checked against the model: kept as evidence,
+                // no longer trusted, and replaced by the next run of each solver ([References.stale]).
+                it.execute("UPDATE reference_rows SET stale = 1 WHERE solver IN ${References.UNCHECKED_SOLVERS.joinToString(",", "(", ")") { s -> "'$s'" }}")
+            }
         }
     }
 
@@ -522,7 +533,8 @@ class Store(file: Path) {
 
     /**
      * Keep each of [rows] for its (collection, problem, solver) unless the stored row is stronger (see
-     * [References.stronger]), so a weaker rerun never loses a proof. Returns how many rows changed.
+     * [References.replaces]), so a weaker rerun never loses a proof, while a row produced another way replaces it
+     * whatever its strength. Returns how many rows changed.
      */
     @Synchronized
     fun putReferences(rows: List<Pair<Pair<String, String>, Reference>>, source: String): Int = transaction {
@@ -531,7 +543,8 @@ class Store(file: Path) {
         val select = connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND solver = ?")
         val upsert = connection.prepareStatement(
             "INSERT OR REPLACE INTO reference_rows (collection, problem, solver, maximize, objective, feasible, proven, " +
-                "elapsed_ms, budget_ms, source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "elapsed_ms, budget_ms, source, updated_at, version, validation, dual_bound, stale) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         select.use {
             upsert.use {
@@ -540,7 +553,7 @@ class Store(file: Path) {
                     select.setString(2, key.second)
                     select.setString(3, row.solver)
                     val old = select.executeQuery().use { r -> if (r.next()) reference(r) else null }
-                    if (old != null && (old == row || !References.stronger(row, old))) continue
+                    if (old != null && !References.replaces(row, old)) continue
                     upsert.setString(1, key.first)
                     upsert.setString(2, key.second)
                     upsert.setString(3, row.solver)
@@ -552,6 +565,10 @@ class Store(file: Path) {
                     upsert.setLong(9, row.budgetMs)
                     upsert.setString(10, source)
                     upsert.setLong(11, at)
+                    upsert.setString(12, row.version)
+                    upsert.setString(13, row.validation)
+                    upsert.setObject(14, row.dualBound)
+                    upsert.setInt(15, if (row.stale) 1 else 0)
                     upsert.executeUpdate()
                     changed++
                 }
@@ -595,7 +612,11 @@ class Store(file: Path) {
         }
     }
 
-    /** The strongest reference row of each of [keys] that has any, keyed by (collection, problem). */
+    /**
+     * The strongest trusted reference row of each of [keys] that has any, keyed by (collection, problem): stale rows
+     * left out, and across solvers a proof another solver's solution contradicts set aside ([References.trusted]).
+     * With [solver], that solver's own current row, whatever the others say: what its backfill needs to know.
+     */
     @Synchronized
     fun references(keys: Collection<Pair<String, String>>, solver: String? = null): Map<Pair<String, String>, Reference> =
         connection.prepareStatement(
@@ -607,15 +628,16 @@ class Store(file: Path) {
                 statement.setString(3, solver)
                 statement.setString(4, solver)
                 val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
+                    .filter { !it.stale }.let { if (solver == null) References.trusted(it) else it }
                 rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
             }.toMap()
         }
 
-    /** Every problem two reference solvers contradict each other on, with why ([References.conflicts]). */
+    /** Every problem two reference solvers' current rows contradict each other on, with why ([References.conflicts]). */
     @Synchronized
     fun referenceConflicts(): List<Disagreement> = connection.prepareStatement(
-        "SELECT * FROM reference_rows WHERE (collection, problem) IN " +
-            "(SELECT collection, problem FROM reference_rows GROUP BY collection, problem HAVING COUNT(*) > 1)",
+        "SELECT * FROM reference_rows WHERE stale = 0 AND (collection, problem) IN " +
+            "(SELECT collection, problem FROM reference_rows WHERE stale = 0 GROUP BY collection, problem HAVING COUNT(*) > 1)",
     ).use { statement ->
         statement.executeQuery().use { r ->
             generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
@@ -675,6 +697,10 @@ class Store(file: Path) {
         proven = r.getInt("proven") == 1,
         elapsedMs = r.getLong("elapsed_ms"),
         budgetMs = r.getLong("budget_ms"),
+        version = r.getString("version"),
+        validation = r.getString("validation"),
+        dualBound = r.getDouble("dual_bound").takeUnless { r.wasNull() },
+        stale = r.getInt("stale") == 1,
     )
 
     /** Make schedule [id] due, so the runner checks it at once; false when there is no such schedule. */

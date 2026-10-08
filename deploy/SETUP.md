@@ -108,11 +108,19 @@ SMT-LIB, `highs` beside SCIP for MPS, or any MiniZinc solver such as `chuffed` b
 same solver, a selection's `reference` filter reads only that solver's results, so `"reference": "missing"` with
 `"solver": "highs"` solves the problems HiGHS has no verdict on, whatever SCIP has. Problems where two reference
 solvers contradict each other (one proving infeasible what another solved, different proven optima, or a solution
-beyond another's proven optimum) are listed on the Reference tab: one of them is wrong.
+beyond another's proven optimum or dual bound) are listed on the Reference tab: one of them is wrong. Both rows stay
+as evidence, but a proof another solver's solution contradicts is set aside, whichever solver made it: comparisons
+and the `reference` filters see an infeasibility proof against a solution as undecided, and an optimum a better
+solution beats, or whose dual bound one lies beyond (by more than a relative 1e-6), as an unproven solution.
 
 Results are kept per (collection, problem, solver); a new one replaces a stored one only when it is stronger (decided
-over undecided, proven over unproven, then the better objective, then the bigger budget), so no proof is lost. `lab references <text> [solver]
-[verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
+over undecided, proven over unproven, then the better objective, then the bigger budget), so no proof is lost. A row
+produced another way (its `version`: an MPS reference's solver build, options and how its solution was checked, see
+klause-bench's README) replaces the stored one whatever its strength, so a proof judged wrongly never outlives its
+correction. SCIP and HiGHS rows from before their solutions were checked are stale: kept on the problem pages as
+evidence, never used by comparisons or filters, and replaced by the next checked run of each solver, which a
+`"reference": "missing"` run of that solver backfills. A bench too old to check sends rows that arrive stale and
+never replace a checked one. `lab references <text> [solver] [verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
 with every solver's verdict and every lab run of it.
 
 The lab has three tabs: Queue (experiments, their pages and comparisons), Regression (a schedule's trend) and

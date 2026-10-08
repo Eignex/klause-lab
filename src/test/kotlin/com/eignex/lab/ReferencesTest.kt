@@ -109,4 +109,87 @@ class ReferencesTest {
 
         assertEquals(listOf(Reference("clasp", false, null, true, true, 250, 10000), null), rows)
     }
+
+    private fun mps(solver: String, feasible: Boolean?, objective: Double?, proven: Boolean, version: String = "$solver|mps-validate-1", dualBound: Double? = null) =
+        Reference(solver, maximize = false, objective = objective, feasible = feasible, proven = proven, elapsedMs = 10,
+            budgetMs = 60_000, version = version, dualBound = dualBound, stale = version.isEmpty())
+
+    @Test
+    fun `a checked rerun replaces an invalid stored proof, and an unchecked one never replaces a checked row`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "miplib2017" to "neos4"
+        store.putReferences(listOf(key to mps("highs", true, -48454383704.3946, proven = true, version = "")), "old")
+        val corrected = mps("highs", true, -48603440750.5895, proven = false)
+
+        val replaced = store.putReferences(listOf(key to corrected), "new")
+        val unchecked = store.putReferences(listOf(key to mps("highs", true, -48454383704.3946, proven = true, version = "")), "old bench")
+
+        assertEquals(listOf(1, 0), listOf(replaced, unchecked))
+        assertEquals(corrected, store.references(listOf(key), "highs")[key])
+    }
+
+    @Test
+    fun `a proof another solver's checked solution contradicts is set aside, the rows kept as evidence`() {
+        val infeasible = mps("highs", false, null, proven = true)
+        val witness = mps("scip", true, 619244367.66, proven = false)
+        val excluded = mps("highs", true, 317080.0, proven = true, dualBound = 317070.0)
+        val better = mps("scip", true, 317056.21, proven = false)
+        val agreed = mps("scip", true, 10.0, proven = true)
+
+        val trusted = References.trusted(listOf(infeasible, witness)) + References.trusted(listOf(excluded, better)) +
+            References.trusted(listOf(agreed, mps("highs", true, 10.0, proven = false)))
+
+        assertEquals(listOf(null to false, true to false, true to false, true to false, true to true, true to false),
+            trusted.map { it.feasible to it.proven })
+        assertEquals(listOf("highs proves infeasible, scip found a solution"), References.conflicts(listOf(infeasible, witness)))
+    }
+
+    @Test
+    fun `the lab's comparisons take neither stale rows nor disputed proofs`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "miplib2017" to "neos-1603965"
+        store.putReferences(listOf(key to mps("scip", true, 637213553.1165, proven = false)), "scip")
+        store.putReferences(listOf(key to mps("highs", false, null, proven = true)), "highs")
+        val stale = "miplib2017" to "marne"
+        store.putReferences(listOf(stale to mps("scip", true, 317056.2, proven = true, version = "")), "old")
+
+        val trusted = store.references(listOf(key, stale))
+
+        assertEquals(listOf("scip" to true), trusted.values.map { it.solver to it.feasible })
+        assertEquals(2, store.referenceRows(key.first, key.second).size)
+    }
+
+    @Test
+    fun `opening a database from before checked MPS references marks their rows stale`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.createStatement().use {
+                it.execute("""CREATE TABLE reference_rows (
+                    collection TEXT NOT NULL, problem TEXT NOT NULL, solver TEXT NOT NULL, maximize INTEGER NOT NULL,
+                    objective REAL, feasible INTEGER, proven INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL,
+                    budget_ms INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (collection, problem, solver))""")
+                it.execute("INSERT INTO reference_rows VALUES ('miplib2017', 'neos4', 'highs', 0, -4.8e10, 1, 1, 10, 60000, 'old', 0)")
+                it.execute("INSERT INTO reference_rows VALUES ('hakank', 'q', 'cp-sat', 0, 8, 1, 1, 10, 60000, 'old', 0)")
+            }
+        }
+
+        val store = Store(file)
+
+        assertEquals(listOf(true, false), listOf("miplib2017" to "neos4", "hakank" to "q").map { store.referenceRows(it.first, it.second).single().stale })
+        assertEquals(setOf("hakank" to "q"), store.references(listOf("miplib2017" to "neos4", "hakank" to "q")).keys)
+    }
+
+    @Test
+    fun `a checked MPS record carries its version, validation and dual bound, an unchecked one arrives stale`() {
+        fun record(stats: String) = Json.parseToJsonElement(
+            """{"solver":"scip","budgetMs":60000,"feasible":true,"objective":5.0,"proven":false,"maximize":false,"stats":{$stats}}""",
+        )
+
+        val checked = References.of(record(""""solveTime":"1.5","referenceVersion":"scip|v","validation":"repaired","dualBound":"4.0""""))
+        val unchecked = References.of(record(""""solveTime":"1.5""""))
+
+        assertEquals(listOf("scip|v", "repaired", 4.0, false), listOf(checked?.version, checked?.validation, checked?.dualBound, checked?.stale))
+        assertEquals(true, unchecked?.stale)
+    }
 }

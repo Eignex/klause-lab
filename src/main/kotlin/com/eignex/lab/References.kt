@@ -20,6 +20,15 @@ data class Reference(
     val proven: Boolean,
     val elapsedMs: Long,
     val budgetMs: Long,
+    /** How the solver ran and its claim was judged, where that decides whether the row still holds: an MPS reference's
+     *  build, options and validation rules. A row produced another way replaces this one ([References.replaces]). */
+    val version: String = "",
+    /** How the solution was checked against the model: `valid`, `repaired`, or why it was not (an MPS reference). */
+    val validation: String? = null,
+    /** The solver's dual bound, which a proof rests on: one that excludes another solver's solution disputes it. */
+    val dualBound: Double? = null,
+    /** From before the solver's claims were checked: kept as evidence, never trusted. */
+    val stale: Boolean = false,
 )
 
 /** One collection's rows from one reference solver. */
@@ -131,7 +140,9 @@ object References {
         val budgetMs = field("budgetMs")?.longOrNull ?: return null
         val feasible = field("feasible")?.booleanOrNull
         val proven = field("proven")?.booleanOrNull ?: false
-        val solveMs = ((fields["stats"] as? JsonObject)?.get("solveTime") as? JsonPrimitive)?.content?.toDoubleOrNull()?.let { (it * 1000).toLong() }
+        val stats = fields["stats"] as? JsonObject
+        fun stat(name: String) = (stats?.get(name) as? JsonPrimitive)?.content
+        val solveMs = stat("solveTime")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
         val elapsedMs = when {
             proven -> solveMs ?: budgetMs
             feasible == true -> field("timeToFirstFeasibleMs")?.longOrNull ?: solveMs ?: budgetMs
@@ -145,7 +156,47 @@ object References {
             proven = proven,
             elapsedMs = elapsedMs,
             budgetMs = budgetMs,
+            version = stat("referenceVersion").orEmpty(),
+            validation = stat("validation"),
+            dualBound = stat("dualBound")?.toDoubleOrNull(),
+            // A bench from before MPS claims were checked still reports them unchecked.
+            stale = solver in UNCHECKED_SOLVERS && stat("referenceVersion").isNullOrEmpty(),
         )
+    }
+
+    /** The solvers whose rows from before [Reference.version] was kept are stale: MPS references, whose solutions
+     *  were not checked against the model. */
+    val UNCHECKED_SOLVERS = listOf("scip", "highs")
+
+    /** Whether [incoming] takes the place of the same solver's [stored] row: a current row always over a stale one and
+     *  never the other way, then one produced another way, so a proof the old way judged wrongly never outlives its
+     *  correction, then the stronger verdict. */
+    fun replaces(incoming: Reference, stored: Reference): Boolean = when {
+        incoming.stale != stored.stale -> stored.stale
+        incoming.version != stored.version -> true
+        else -> incoming != stored && stronger(incoming, stored)
+    }
+
+    /**
+     * [rows] of one problem as far as they can be trusted. A proof another solver's solution contradicts is set aside,
+     * whichever solver made it: an infeasibility proof against a solution becomes undecided, and an optimum beaten by
+     * a better solution, or whose dual bound excludes one, keeps its solution but loses its proof. The rows themselves
+     * stay as they were, as evidence of the contradiction ([conflicts]).
+     */
+    fun trusted(rows: List<Reference>): List<Reference> = rows.map { a ->
+        val disputed = a.proven && rows.any { b ->
+            val y = b.objective
+            b.solver != a.solver && b.feasible == true && (
+                a.feasible == false ||
+                    y != null && a.objective != null && beyond(y, a.objective, a.maximize) ||
+                    y != null && a.dualBound != null && beyond(y, a.dualBound, a.maximize)
+                )
+        }
+        when {
+            !disputed -> a
+            a.feasible == false -> a.copy(feasible = null, proven = false)
+            else -> a.copy(proven = false)
+        }
     }
 
     /** Whether [a] is the better verdict on a problem than [b]: decided over undecided, proven over unproven,
@@ -238,8 +289,12 @@ object References {
                 if (a.solver < b.solver && a.proven && b.proven && x != null && y != null && !same(x, y)) {
                     add("${a.solver} proves optimum ${fmt(x)}, ${b.solver} proves ${fmt(y)}")
                 }
-                if (a.proven && x != null && !b.proven && y != null && better(y, x, a.maximize)) {
+                if (a.proven && x != null && !b.proven && y != null && beyond(y, x, a.maximize)) {
                     add("${b.solver}'s solution ${fmt(y)} beats ${a.solver}'s proven optimum ${fmt(x)}")
+                }
+                val bound = a.dualBound
+                if (a.proven && bound != null && y != null && (x == null || !beyond(y, x, a.maximize)) && beyond(y, bound, a.maximize)) {
+                    add("${b.solver}'s solution ${fmt(y)} lies beyond ${a.solver}'s dual bound ${fmt(bound)}")
                 }
             }
         }
@@ -258,6 +313,18 @@ object References {
     /** Whether [x] is better than [than] by more than [same] allows, in the [maximize] sense. */
     fun better(x: Double, than: Double, maximize: Boolean): Boolean = !same(x, than) && if (maximize) x > than else x < than
 
+    /**
+     * Whether a solution [x] lies beyond a proven [bound] in the [maximize] sense, by more than a solution checker's
+     * tolerance: what refutes a proof. Tighter than [same], which allows for a solver's gap tolerance, since a proof
+     * that stopped within its gap is no longer a proof (an MPS reference records it unproven), and a solution only
+     * 0.01% past a dual bound still refutes it.
+     */
+    fun beyond(x: Double, bound: Double, maximize: Boolean): Boolean {
+        val margin = maxOf(ABS_TOLERANCE, PROOF_TOLERANCE * maxOf(abs(x), abs(bound)))
+        return if (maximize) x > bound + margin else x < bound - margin
+    }
+
+    private const val PROOF_TOLERANCE = 1e-6
     private const val REL_TOLERANCE = 1e-4
     private const val ABS_TOLERANCE = 1e-6
 
