@@ -52,7 +52,9 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   cores within the largest instance), and on the lab machine otherwise; a schedule's runs default to the lab machine.
 - `profileCli: true` (AWS only, with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings
   and measures its physical peak RSS and user/system CPU with GNU time. Each case returns `cli.jfr`, `resources.txt`
-  and `measurement.json` under `cases/<index>/profile-<attempt>/`, accessible through the job's Files page or `lab fetch`.
+  and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page or `lab fetch`.
+  Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
+  command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
   These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
   at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
   RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted
