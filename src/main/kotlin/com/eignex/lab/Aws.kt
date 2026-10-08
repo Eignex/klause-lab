@@ -4,8 +4,10 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Collections
 import java.util.Properties
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -382,6 +384,8 @@ class AwsWorker(
     private val cli: AwsCli get() = AwsCli(aws)
     private val settings = config.dataDir.resolve("aws").resolve("aws.properties")
     private val busy = AtomicInteger()
+    /** Numbers the instances' names. */
+    private val launched = AtomicInteger()
 
     /** Whether any AWS job is running: the runner holds off updating itself until none is, since a restart would end
      *  its thread and, with it, the job's instances. */
@@ -412,25 +416,51 @@ class AwsWorker(
         val spec = checkNotNull(next.experiment)
         val cores = Experiments.arms(spec).maxOf { it.cores }
         val size = aws.sizeFor(cores)
-        val free = (aws.vcpuQuota - busy.get()) / (size?.vcpus ?: aws.vcpuQuota)
-        if (size != null && free < 1) return
-        val job = store.next(Experiments.AWS_HOST) ?: return
-        check(job.id == next.id) { "claimed ${job.id}, expected ${next.id}" }
         if (size == null) {
+            val job = store.next(Experiments.AWS_HOST) ?: return
             store.finish(job.id, Status.FAILED, "its cases need $cores cores, more than an instance within the ${aws.vcpuQuota}-vCPU quota has")
             return
         }
-        val machines = (spec.machines ?: aws.maxInstances).coerceIn(1, free)
-        busy.addAndGet(machines * size.vcpus)
+        // Reserved before the job is claimed, since a running job may take the same vCPUs to grow.
+        val held = Reservation(size)
+        val machines = ((spec.machines ?: aws.maxInstances).coerceAtLeast(1) downTo 1).firstOrNull { held.reserve(it) } ?: return
+        val job = store.next(Experiments.AWS_HOST)
+        if (job?.id != next.id) {
+            held.releaseAll()
+            check(job == null) { "claimed ${job?.id}, expected ${next.id}" }
+            return
+        }
         thread(name = "aws-${job.id}") {
-            // What the job holds of the reservation, in vCPUs: less once AWS gave it fewer instances than it asked for.
-            val held = AtomicInteger(machines * size.vcpus)
             try {
-                work(job, machines, size) { launched -> busy.addAndGet(-(held.getAndSet(launched * size.vcpus) - launched * size.vcpus)) }
+                work(job, machines, size, held)
             } finally {
-                busy.addAndGet(-held.get())
+                held.releaseAll()
             }
         }
+    }
+
+    /** The vCPUs one job holds of the quota, by instance of [size]: reserved before a launch, released as soon as an
+     *  instance is not needed or AWS did not give it. */
+    private inner class Reservation(private val size: InstanceSize) {
+        private val instances = AtomicInteger()
+
+        /** Reserve [n] more instances, if the quota has room for them all. */
+        fun reserve(n: Int): Boolean {
+            while (true) {
+                val taken = busy.get()
+                if (taken + n * size.vcpus > aws.vcpuQuota) return false
+                if (busy.compareAndSet(taken, taken + n * size.vcpus)) break
+            }
+            instances.addAndGet(n)
+            return true
+        }
+
+        fun release(n: Int) {
+            instances.addAndGet(-n)
+            busy.addAndGet(-n * size.vcpus)
+        }
+
+        fun releaseAll() = release(instances.get())
     }
 
     /** After a restart: jobs left running go back in the queue, and instances no running job owns are terminated. */
@@ -453,10 +483,10 @@ class AwsWorker(
         }
     }
 
-    private fun work(claimed: Job, machines: Int, size: InstanceSize, launched: (Int) -> Unit) {
+    private fun work(claimed: Job, machines: Int, size: InstanceSize, held: Reservation) {
         val dir = config.jobDir(claimed.id).createDirectories()
         val log = dir.resolve("setup.log").toFile().apply { appendText("") }
-        val instances = ArrayList<String>()
+        val instances: MutableList<String> = Collections.synchronizedList(ArrayList())
         try {
             val job = checkNotNull(store.job(claimed.id))
             val spec = checkNotNull(job.experiment)
@@ -464,7 +494,7 @@ class AwsWorker(
             val primary = shas.getValue(arms.first().ref)
             val hosts = launch(job, machines, size, instances)
             // A job that got fewer instances than it reserved hands the rest back, so the next job can use them.
-            launched(hosts.size)
+            held.release(machines - hosts.size)
             parallelOn(hosts) { host -> setup(job, host, shas.values.distinct(), log) }
             if (job.commands.isEmpty()) {
                 runner.log(job.id, "${hosts.first().instance}: planning, which fetches the corpora the selections read")
@@ -483,20 +513,19 @@ class AwsWorker(
                     .onFailure { runner.log(job.id, "corpus push failed, the other instances fetch upstream: ${it.message}") }
             }
             if (hosts.size > 1) runner.log(job.id, "fetching the corpora on the other instances")
-            // Each instance has the corpora its cases read before they start, so cases that share a collection never
-            // fetch it side by side: from the bucket first, then whatever a selection still lacks.
             val selections = spec.problems.map { Experiments.selectArgs(it) }
-            parallelOn(hosts.drop(1)) { host ->
-                aws.corpusBucket?.let { bucket -> runCatching { host.ssh.run(s3Sync("s3://$bucket/corpus", "~/corpus"), S3_PUSH_TIMEOUT_SEC) } }
-                selections.forEach { host.select(host.worktree(primary), it) }
-            }
+            parallelOn(hosts.drop(1)) { host -> fetchCorpora(host, primary, selections) }
             store.setup(job.id, primary)
             // Unset, a job runs as many cases on each instance as it has physical cores; the core budget then fits
             // cases that need several of them.
             if (spec.parallel == null) store.setParallel(job.id, size.cores)
-            val shards = shards(job.id, hosts.size)
-            runner.log(job.id, "running on ${hosts.size} instances: " + hosts.mapIndexed { i, h -> "${h.instance} (${shards[i].size} cases)" }.joinToString())
-            val outcomes = parallelOn(hosts.indices.toList()) { i -> runner.dispatch(checkNotNull(store.job(job.id)), dir, hosts[i], shards[i]) }
+            val problems = ProblemQueue(store.cases(job.id))
+            runner.log(job.id, "running ${problems.size} problems on ${hosts.size} instances, each taking the next problem as it has room")
+            val fleet = Fleet(job, dir, size, held, instances, problems) { host ->
+                setup(job, host, shas.values.distinct(), log)
+                fetchCorpora(host, primary, selections)
+            }
+            val outcomes = fleet.run(hosts)
             when {
                 Dispatched.CANCELLED in outcomes -> runner.cancel(job.id)
                 Dispatched.YIELDED in outcomes -> {
@@ -517,45 +546,152 @@ class AwsWorker(
                 store.finish(claimed.id, Status.FAILED, e.message ?: e.toString())
             }
         } finally {
-            if (instances.isNotEmpty()) {
+            val left = synchronized(instances) { instances.toList() }
+            if (left.isNotEmpty()) {
                 // Retried, since the lab machine's network may be what ended the job; what still fails the sweep in
                 // [loop] terminates within minutes.
                 runCatching {
                     retrying(config.retry, onRetry = { _, wait, e ->
-                        runner.log(claimed.id, "terminating $instances failed, retrying in ${wait / MS_PER_SEC} s: ${e.message}")
-                    }) { cli.terminate(instances) }
-                }.onSuccess { runner.log(claimed.id, "terminated $instances") }
-                    .onFailure { runner.log(claimed.id, "could not terminate $instances; the next sweep will: ${it.message}") }
+                        runner.log(claimed.id, "terminating $left failed, retrying in ${wait / MS_PER_SEC} s: ${e.message}")
+                    }) { cli.terminate(left) }
+                }.onSuccess { runner.log(claimed.id, "terminated $left") }
+                    .onFailure { runner.log(claimed.id, "could not terminate $left; the next sweep will: ${it.message}") }
             }
             Files.deleteIfExists(config.jobDir(claimed.id).resolve(INSTANCES_FILE))
         }
     }
 
+    /** Each instance has the corpora its cases read before they start, so cases that share a collection never fetch
+     *  it side by side: from the bucket first, then whatever a selection still lacks. */
+    private fun fetchCorpora(host: AwsHost, primary: String, selections: List<String>) {
+        aws.corpusBucket?.let { bucket -> runCatching { host.ssh.run(s3Sync("s3://$bucket/corpus", "~/corpus"), S3_PUSH_TIMEOUT_SEC) } }
+        selections.forEach { host.select(host.worktree(primary), it) }
+    }
+
+    /**
+     * A job's instances while its cases run. Each takes the next problem left whenever it has room for a case, so a
+     * problem's arms, seeds and repeats all run on one instance and every instance stays busy to the end. While
+     * problems are left, the job asks for no more than its `machines` (default [AwsConfig.maxInstances]) and no AWS job
+     * waits in the queue, it launches another instance whenever the quota has room for one: a job that started with
+     * the few instances the quota had left grows as other jobs end. An instance with nothing left to take is
+     * terminated at once, handing its vCPUs to the jobs still running or waiting.
+     */
+    private inner class Fleet(
+        private val job: Job,
+        private val dir: Path,
+        private val size: InstanceSize,
+        private val held: Reservation,
+        private val instances: MutableList<String>,
+        private val problems: ProblemQueue,
+        private val prepare: (AwsHost) -> Unit,
+    ) {
+        private val pool = Executors.newCachedThreadPool()
+        private val dispatches = Collections.synchronizedList(ArrayList<Future<Dispatched>>())
+
+        fun run(hosts: List<AwsHost>): List<Dispatched> {
+            try {
+                hosts.forEach(::start)
+                var growing: Future<*>? = null
+                var nextGrowth = 0L
+                while (dispatches.toList().any { !it.isDone } || growing?.isDone == false) {
+                    if (growing?.isDone != false && System.currentTimeMillis() >= nextGrowth && wantsMore() && held.reserve(1)) {
+                        growing = pool.submit { if (!grow()) nextGrowth = System.currentTimeMillis() + GROW_RETRY_MS }
+                    }
+                    Thread.sleep(GROW_POLL_MS)
+                }
+                growing?.get()
+                return dispatches.toList().map { it.get() }
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+
+        private fun start(host: AwsHost) {
+            dispatches += pool.submit<Dispatched> {
+                val outcome = runner.dispatch(checkNotNull(store.job(job.id)), dir, host, problems::take)
+                if (outcome == Dispatched.FINISHED) retire(host.instance, "has no problems left to take")
+                outcome
+            }
+        }
+
+        private fun wantsMore(): Boolean {
+            if (problems.isEmpty() || store.cancelRequested(job.id)) return false
+            val current = store.job(job.id) ?: return false
+            val wanted = current.experiment?.machines ?: aws.maxInstances
+            return !current.paused && instances.size < wanted && store.queueOrder(Experiments.AWS_HOST).isEmpty()
+        }
+
+        /** Launch, set up and start one more instance on the reservation just made; false when it did not join. */
+        private fun grow(): Boolean {
+            val added = runCatching { launch(job, 1, size, instances, waitForCapacity = false) }
+                .onFailure { runner.log(job.id, "no instance added: ${it.message}") }.getOrNull().orEmpty()
+            val host = added.singleOrNull() ?: return false.also { held.release(1) }
+            val joined = runCatching { prepare(host) }
+                .onFailure { runner.log(job.id, "${host.instance} did not join: ${it.message}") }.isSuccess &&
+                wantsToStart()
+            if (!joined) {
+                retire(host.instance, "was not needed after all")
+                return false
+            }
+            runner.log(job.id, "${host.instance} joined; ${instances.size} instances now")
+            start(host)
+            return true
+        }
+
+        private fun wantsToStart(): Boolean =
+            !problems.isEmpty() && !store.cancelRequested(job.id) && store.job(job.id)?.paused == false
+
+        private fun retire(instance: String, why: String) {
+            if (!instances.remove(instance)) return
+            writeInstances(job, instances, size)
+            runCatching { retrying(config.retry) { cli.terminate(listOf(instance)) } }
+                .onSuccess { runner.log(job.id, "$instance $why: terminated") }
+                .onFailure { runner.log(job.id, "$instance $why; could not terminate it, the next sweep will: ${it.message}") }
+            held.release(1)
+        }
+    }
+
+    private fun writeInstances(job: Job, instances: List<String>, size: InstanceSize) {
+        val ids = synchronized(instances) { instances.toList() }
+        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile().writeText(ids.joinToString("\n", postfix = "\n") { "$it ${size.type}" })
+    }
+
     /** Launch [machines] instances for [job], recording each in [instances] at once so that it is terminated whatever
-     *  happens next. */
-    private fun launch(job: Job, machines: Int, size: InstanceSize, instances: MutableList<String>): List<AwsHost> {
+     *  happens next, and return the new ones. [waitForCapacity] retries a while when AWS refuses for its quota. */
+    private fun launch(
+        job: Job, machines: Int, size: InstanceSize, instances: MutableList<String>, waitForCapacity: Boolean = true,
+    ): List<AwsHost> {
         runCatching { cli.admitThisMachine() }
+        val new = ArrayList<String>()
         val userData = Files.createTempFile("klause-lab-user-data", ".sh").toFile()
         try {
             userData.writeText(bootstrap())
-            for (n in 0 until machines) {
+            var refused = false
+            repeat(machines) {
+                if (refused) return@repeat
+                val name = "klause-lab-${job.id}-${launched.incrementAndGet()}"
                 // AWS refusing more for a quota or a lack of capacity is not a reason to fail a job that already has
                 // instances: it runs on those. Without any, the launch is retried like any other step.
-                val id = runCatching { launchWhenCapacity(job, n, userData, size.type) }.getOrElse { e ->
+                val id = runCatching {
+                    if (waitForCapacity) launchWhenCapacity(job, name, userData, size.type) else cli.launch(job.id, name, userData, size.type)
+                }.getOrElse { e ->
                     if (instances.isNotEmpty() && CAPACITY.containsMatchIn(e.message.orEmpty())) {
                         runner.log(job.id, "AWS gave no more instances (${CAPACITY.find(e.message.orEmpty())?.value}); running on ${instances.size}")
-                        break
+                        refused = true
+                        return@repeat
                     }
-                    runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, "klause-lab-${job.id}-$n", userData, size.type) }
+                    runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, name, userData, size.type) }
                 }
+                new += id
                 instances += id
             }
         } finally {
             userData.delete()
         }
-        runner.log(job.id, "launched ${size.type} instances $instances")
-        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile().writeText(instances.joinToString("\n", postfix = "\n") { "$it ${size.type}" })
-        return instances.map { id ->
+        if (new.isEmpty()) return emptyList()
+        runner.log(job.id, "launched ${size.type} instances $new")
+        writeInstances(job, instances, size)
+        return new.map { id ->
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
             AwsHost(id, Ssh(ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts) {
@@ -568,13 +704,13 @@ class AwsWorker(
      * Launch one instance, retrying for a couple of minutes while AWS refuses for a quota or a lack of capacity: instances
      * a job just terminated hold their vCPUs against the quota for a minute or so after it ended.
      */
-    private fun launchWhenCapacity(job: Job, n: Int, userData: File, type: String): String =
+    private fun launchWhenCapacity(job: Job, name: String, userData: File, type: String): String =
         retrying(
             CAPACITY_WAIT,
             onRetry = { _, wait, e -> if (!CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
                 runner.log(job.id, "AWS refused another instance (${CAPACITY.find(e.message.orEmpty())?.value}); trying again in ${wait / MS_PER_SEC} s") },
             sleep = { wait -> check(!store.cancelRequested(job.id)) { "cancelled" }; Thread.sleep(wait) },
-        ) { cli.launch(job.id, "klause-lab-${job.id}-$n", userData, type) }
+        ) { cli.launch(job.id, name, userData, type) }
 
     /** Wait for [host]'s bootstrap, then clone the repository and build each of [shas] on it. */
     private fun setup(job: Job, host: AwsHost, shas: List<String>, log: File) {
@@ -626,8 +762,6 @@ class AwsWorker(
         runner.log(job.id, "${host.instance}: built")
     }
 
-    private fun shards(jobId: Long, n: Int): List<Set<Int>> = shards(store.cases(jobId), n)
-
     /** `aws s3 sync` with the instance role, leaving out the bench's staging copies of compressed instances. */
     private fun s3Sync(from: String, to: String) =
         "aws s3 sync $from $to --region ${aws.region} --only-show-errors --exclude '.plain/*' --exclude '*/.plain/*'"
@@ -664,16 +798,10 @@ class AwsWorker(
         /** The job's running instances, one id a line, while it has them: what the pages show. */
         const val INSTANCES_FILE = "aws-instances"
 
-        /** [cases] split by problem over [n] instances: a problem's cases, every arm, seed and repeat of it, all on
-         *  one, and the problems dealt out in plan order so each instance gets a share of every selection. */
-        internal fun shards(cases: List<CaseResult>, n: Int): List<Set<Int>> {
-            val order = cases.map { it.problem.suite to it.problem.problem }.distinct().withIndex().associate { (i, key) -> key to i }
-            return (0 until n).map { shard ->
-                cases.filter { order.getValue(it.problem.suite to it.problem.problem) % n == shard }.map { it.index }.toSet()
-            }
-        }
-
         private const val POLL_MS = 10_000L
+        /** How often a running job looks for room to add an instance, and how long it waits after an attempt failed. */
+        private const val GROW_POLL_MS = 10_000L
+        private const val GROW_RETRY_MS = 120_000L
         private const val SWEEP_MS = 5 * 60_000L
         private const val SSH_STEP_SEC = 60L
         private const val SHA_LOG = 9
@@ -691,4 +819,19 @@ class AwsWorker(
 
         private val BOOT_WAIT = Backoff(attempts = 45, baseMs = 20_000, maxMs = 20_000)
     }
+}
+
+/** A job's problems not yet taken by an instance, in plan order, each as the indices of its cases: every arm, seed and
+ *  repeat of a problem goes to the instance that takes it, so each comparison is made on one machine. */
+internal class ProblemQueue(cases: List<CaseResult>) {
+    private val left = ArrayDeque(cases.filter { it.status == Status.QUEUED }
+        .groupBy { it.problem.suite to it.problem.problem }.values.map { group -> group.map { it.index } })
+
+    val size: Int @Synchronized get() = left.size
+
+    @Synchronized
+    fun take(): List<Int>? = left.removeFirstOrNull()
+
+    @Synchronized
+    fun isEmpty(): Boolean = left.isEmpty()
 }

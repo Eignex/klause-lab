@@ -196,8 +196,11 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   and refreshed after one, and each commit's built distributions (`builds/<sha>.tar.zst`): an instance that finds its
   commit there unpacks it instead of building, so a commit is built once across every job and instance.
 - The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
-  claims the next `aws` job when the vCPUs it needs are free and gives it `machines` instances (default
-  `maxInstances`, as many as the account's `vcpuQuota` of on-demand vCPUs leaves), each job on its own thread.
+  claims the next `aws` job when the vCPUs for one instance are free and gives it `machines` instances (default
+  `maxInstances`), or as many as the account's `vcpuQuota` of on-demand vCPUs leaves, each job on its own thread.
+  A job that started with fewer grows while it runs: whenever no `aws` job waits in the queue and the quota has room,
+  it launches another instance, up to its `machines`, as long as it has problems no instance has taken. An instance
+  with no problem left to take is terminated at once, so its vCPUs go to the jobs still running or waiting.
 - An instance's size follows the job's arms: the smallest size of the family (`c7i.2xlarge`, `4xlarge`, `8xlarge`)
   with as many physical cores as the arm with the most `processors` needs for one case. Each instance runs as many
   cases at once as it has physical cores, a case holding its `processors` of them, unless the spec sets `parallel`,
@@ -205,9 +208,10 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   a c7i.2xlarge running one case, or 8 cores per case a c7i.4xlarge. The job page shows its shape, e.g.
   `4 × c7i.2xlarge, 4 cases each`.
 - A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
-  It plans on the first, and the others fetch the same corpora before cases start. The cases are split by problem: a
-  problem's arms, seeds and repeats all run on one instance, so each comparison is made on one machine, the problems
-  dealt round-robin. Each instance runs `parallel` cases at once (default `cores`, one per physical core) over SSH under
+  It plans on the first, and the others fetch the same corpora before cases start. The instances share the job's
+  problems: each takes the next one in plan order whenever it has room for a case, and a problem's arms, seeds and
+  repeats all run on the instance that took it, so each comparison is made on one machine and no instance idles while
+  another has a backlog. An instance added later builds and fetches the same way, then takes problems too. Each instance runs `parallel` cases at once (default `cores`, one per physical core) over SSH under
   `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
   local job.
 - Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per physical core, is the
@@ -222,7 +226,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   job's place in its own host's queue. A queued job that has not been planned can move between the Mac and AWS from
   its page, or with `lab host <id> lab|aws [machines]`; once planned, its commands name paths on its host.
   An AWS job's instance count can change until it ends, on its page or with `lab machines <id> [n]`: a queued or
-  paused job launches that many next; a running one keeps its instances until a pause and resume relaunch them.
+  paused job launches that many next; a running one grows to a raised count as the quota allows, and keeps the
+  instances it has when the count is lowered.
 - The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
   instances.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new

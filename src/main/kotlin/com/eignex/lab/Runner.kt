@@ -128,10 +128,19 @@ class Runner(private val config: Config, private val store: Store) {
         job: Job,
         dir: Path,
         host: ExecutionHost = LocalHost(job, "", File("/dev/null")),
-        /** The cases this dispatch runs, when a job is split over several hosts; null for all of them. */
-        only: Set<Int>? = null,
+        /**
+         * Where the cases come from when a job is split over several hosts: the next problem's case indices, taken
+         * when this host has room for another case, null once every problem is taken. Null runs every queued case.
+         */
+        next: (() -> Collection<Int>?)? = null,
     ): Dispatched {
-        val pending = ArrayDeque(job.commands.filter { it.status == Status.QUEUED && (only == null || it.index in only) })
+        val queued = job.commands.filter { it.status == Status.QUEUED }.associateBy { it.index }
+        val pending = ArrayDeque(if (next == null) queued.values else emptyList())
+        // Cases already started elsewhere, or finished, are not in [queued]: a problem with none left is skipped.
+        fun take() {
+            if (next != null) while (pending.isEmpty()) next()?.mapNotNullTo(pending) { queued[it] } ?: break
+        }
+        take()
         val active = LinkedHashMap<Int, Future<Int>>()
         val pool = Executors.newCachedThreadPool()
         var cancelled = false
@@ -149,6 +158,9 @@ class Runner(private val config: Config, private val store: Store) {
                         keepRecord(job.id, index, dir)
                     }
                 }
+                // Another problem only once this host has room for a case of it, so the problems left go to whichever
+                // host frees up first, a host added later included.
+                if (!cancelled && !yielding && active.size < store.parallel(job.id).coerceIn(1, host.maxParallel)) take()
                 // Each running command sees the request and kills its own tree; the job ends once they have.
                 if (!cancelled && store.cancelRequested(job.id)) cancelled = true
                 if (cancelled) {

@@ -1,9 +1,12 @@
 package com.eignex.lab
 
 import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class AwsTest {
     @Test
@@ -19,12 +22,45 @@ class AwsTest {
     }
 
     @Test
-    fun `a job is split by problem, every case of a problem on one instance`() {
-        val cases = (0 until 12).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 2}"), if (i % 2 == 0) "a" else "b") }
+    fun `a job's problems are taken whole, in plan order, skipping cases already run`() {
+        val cases = (0 until 6).map { i -> CaseResult(i, if (i == 2) Status.DONE else Status.QUEUED, Problem("s", "p${i / 2}"), "a") }
+        val problems = ProblemQueue(cases)
 
-        val shards = AwsWorker.shards(cases, 3)
+        assertEquals(listOf(listOf(0, 1), listOf(3), listOf(4, 5), null), List(4) { problems.take() })
+    }
 
-        assertEquals(listOf(setOf(0, 1, 6, 7), setOf(2, 3, 8, 9), setOf(4, 5, 10, 11)), shards)
+    @Test
+    fun `hosts sharing a job's problems run each case once, a problem's cases all on one host`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = store.create("e", "main", List(12) { "true" to 1_000L }, parallel = 2)
+        val cases = (0 until 12).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 3}"), "a") }
+        val problems = ProblemQueue(cases)
+        val runner = Runner(config, store)
+        val ran = List(2) { java.util.concurrent.ConcurrentLinkedQueue<Int>() }
+        val hosts = ran.map { log -> FakeHost(log) }
+
+        val threads = hosts.map { host -> thread { runner.dispatch(store.job(id)!!, config.jobDir(id), host, problems::take) } }
+        threads.forEach { it.join() }
+
+        val byHost = ran.map { log -> log.map { it / 3 }.toSet() }
+        assertEquals((0 until 12).toList(), ran.flatten().sorted())
+        assertTrue(byHost[0].intersect(byHost[1]).isEmpty())
+    }
+
+    private class FakeHost(private val log: java.util.Queue<Int>) : ExecutionHost {
+        override val cores = 4
+        override val maxParallel = 4
+        override val corpus = ""
+        override val yieldsToUpdates = false
+        override val yieldsToPriority = false
+        override fun worktree(sha: String) = ""
+        override fun select(worktree: String, args: String) = emptyList<String>()
+        override fun run(command: Command, dir: Path): Int {
+            log += command.index
+            Thread.sleep(20)
+            return 0
+        }
     }
 
     @Test
