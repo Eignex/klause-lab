@@ -55,13 +55,18 @@ internal object CliMeasurements {
 internal data class CliMeasurementManifest(
     val caseIndex: Int,
     val attempt: Int,
+    val measurementId: String,
     val instance: String,
-    val options: String,
+    val command: String,
+    val commandExit: Int,
+    val javaOptions: String,
+    val recordSha256: String?,
     val schemaVersion: Int = 1,
     val scope: String = "whole-cli-jvm",
     val allocation: String = "JFR weighted allocation samples; statistical estimate",
     val memory: String = "GNU time peak RSS of the CLI process, KiB",
-    val artifacts: List<String> = CliMeasurements.artifacts,
+    val artifacts: List<String> = CliMeasurements.artifacts +
+        if (recordSha256 == null) emptyList() else listOf("solve-record.json"),
 )
 
 internal class FileTransferFailure(val exit: Int?, message: String) : IllegalStateException(message)

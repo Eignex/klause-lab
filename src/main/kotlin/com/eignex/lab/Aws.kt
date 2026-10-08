@@ -4,8 +4,10 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.Collections
 import java.util.Properties
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -321,11 +323,13 @@ class AwsHost(
 
     private fun runOnce(command: Command, dir: Path, attempt: Int): Int {
         val i = command.index
-        val profile = if (profileCli) "$HOME/job/cases/$i/profile-$attempt" else null
+        val measurementId = if (profileCli) UUID.randomUUID().toString() else null
+        val profile = measurementId?.let { "$HOME/job/cases/$i/profile-$it" }
         val options = profile?.let(CliMeasurements::options).orEmpty()
+        val javaOptions = "$solveJavaOpts -XX:ActiveProcessorCount=${command.cores} $options".trim()
         val script = """
             $ENV
-            export JOB_DIR=$HOME/job KLAUSE_CLI_OPTS=${quote("$solveJavaOpts -XX:ActiveProcessorCount=${command.cores} $options")}
+            export JOB_DIR=$HOME/job KLAUSE_CLI_OPTS=${quote(javaOptions)}
             export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1
             mkdir -p ${'$'}JOB_DIR/cases
             ${profile?.let { "mkdir -p ${quote(it)}; export KLAUSE_LAB_PROFILE_DIR=${quote(it)}" }.orEmpty()}
@@ -360,10 +364,15 @@ class AwsHost(
         val result = if (exit == TIMEOUT_EXIT_CODE) TIMEOUT else exit
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
         if (profile != null) {
-            val files = dir.resolve("cases/$i/profile-$attempt").createDirectories()
+            val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
+            val recordHash = record.takeIf { it.isNotEmpty() }?.let { snapshot ->
+                files.resolve("solve-record.json").toFile().writeText(snapshot)
+                MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
+            }
             for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), PROFILE_TRANSFER_SEC)
             files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
-                CliMeasurementManifest.serializer(), CliMeasurementManifest(i, attempt, instance, options)))
+                CliMeasurementManifest.serializer(), CliMeasurementManifest(
+                    i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions, recordHash)))
         }
         return result
     }
