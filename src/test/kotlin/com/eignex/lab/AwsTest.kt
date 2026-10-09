@@ -104,6 +104,18 @@ class AwsTest {
     }
 
     @Test
+    fun `an AWS case's output comes back only when its record cannot explain it`() {
+        val kept = listOf(
+            AwsHost.keepsOutput(0, recorded = true, profileCli = false),
+            AwsHost.keepsOutput(1, recorded = true, profileCli = false),
+            AwsHost.keepsOutput(0, recorded = false, profileCli = false),
+            AwsHost.keepsOutput(0, recorded = true, profileCli = true),
+        )
+
+        assertEquals(listOf(false, true, true, true), kept)
+    }
+
+    @Test
     fun `an AWS job's machine count changes until it ends`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, description = "d")
