@@ -366,7 +366,9 @@ class AwsHost(
         }
         val result = if (exit == TIMEOUT_EXIT_CODE) TIMEOUT else exit
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
-        for (suffix in listOf("out", "err")) {
+        // Its output, for a case whose record cannot explain what happened: two more SSH round trips each, a cost every
+        // case of a job would pay for nothing when it ran cleanly.
+        if (keepsOutput(result, record.isNotEmpty(), profileCli)) for (suffix in listOf("out", "err")) {
             runCatching { ssh.download("$HOME/job/$i.$suffix", dir.resolve("$i.$suffix"), ARTIFACT_TRANSFER_SEC) }
                 .onFailure { error ->
                     dir.resolve("$i.$suffix.transfer-error").toFile()
@@ -388,6 +390,11 @@ class AwsHost(
     }
 
     companion object {
+        /** Whether a case's stdout and stderr come back from its instance: when it failed, timed out or left no
+         *  record, and for every case of a profiling job. */
+        internal fun keepsOutput(result: Int, recorded: Boolean, profileCli: Boolean): Boolean =
+            profileCli || result != 0 || !recorded
+
         const val HOME = "/home/ubuntu"
         const val ENV = "export JAVA_HOME=/opt/jdk PATH=/opt/jdk/bin:/usr/local/bin:${'$'}PATH"
         private const val SHA_DIR = 12

@@ -304,7 +304,8 @@ A case runs `klause-bench solve-one` in its arm's worktree, with this environmen
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
 Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output and the record go to
-`JOB_DIR/cases/<n>/`. The worktrees are deleted when the job ends. A failing case does not stop the experiment: the
+`JOB_DIR/cases/<n>/`. On AWS the record comes back with every case, and stdout and stderr only for a case that
+failed, timed out or left no record, or for a profiling job: the rest would cost two SSH round trips a case. The worktrees are deleted when the job ends. A failing case does not stop the experiment: the
 rest still run, the job ends DONE, and the failures are counted on it. FAILED means the experiment itself could not
 run, such as a failed checkout, build or selection, or a plan over the size limit.
 
