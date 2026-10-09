@@ -806,8 +806,7 @@ class AwsWorker(
                     appendLine("  tar -C $worktree -c klause-cli/build/install klause-bench/build/install | zstd -q -T0 | aws s3 cp - $archive --region ${aws.region} --only-show-errors || true")
                     appendLine("fi")
                 }
-                if (job.experiment?.profileCli == true) appendLine(CliMeasurements.install(worktree))
-                appendLine(Experiments.captureProvenance(worktree))
+                finishWorktree(worktree, job.experiment?.profileCli == true).forEach(::appendLine)
             }
             if (bucket != null) {
                 appendLine("if [ ${'$'}built = 1 ]; then tar -C ~ -c .gradle/caches/modules-2 .gradle/wrapper 2>/dev/null | zstd -q -T0 | aws s3 cp - s3://$bucket/$GRADLE_ARCHIVE --region ${aws.region} --only-show-errors || true; fi")
@@ -852,6 +851,14 @@ class AwsWorker(
     """.trimIndent() + "\n"
 
     companion object {
+        /**
+         * The steps after a commit's build is in place in [worktree]: a profiling job's launcher, then the provenance
+         * manifest, which must describe the files the cases will run, launcher included. Both come after the build cache
+         * upload, so the cached distributions stay the plain ones.
+         */
+        internal fun finishWorktree(worktree: String, profileCli: Boolean): List<String> =
+            listOfNotNull(CliMeasurements.install(worktree).takeIf { profileCli }, Experiments.captureProvenance(worktree))
+
         /** Cases an instance of [size] runs at once when a job sets no `parallel`: one per two physical cores. */
         internal fun defaultParallel(size: InstanceSize): Int = (size.cores / 2).coerceAtLeast(1)
 
