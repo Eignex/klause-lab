@@ -30,7 +30,11 @@ internal object CliMeasurements {
             #!/usr/bin/env bash
             set -euo pipefail
             delegate="${'$'}{0}.lab-original"
+            if [[ ${'$'}# -eq 1 && ${'$'}1 == --version ]]; then
+                exec "${'$'}delegate" "${'$'}@"
+            fi
             if [[ -n "${'$'}{KLAUSE_LAB_PROFILE_DIR:-}" ]]; then
+                export KLAUSE_CLI_OPTS="${'$'}{KLAUSE_CLI_OPTS:-} ${options("${'$'}KLAUSE_LAB_PROFILE_DIR")}"
                 export KLAUSE_LAB_TIMER_PID=${'$'}$
                 guard='import ctypes, os, signal, sys
             expected = int(os.environ["KLAUSE_LAB_TIMER_PID"])

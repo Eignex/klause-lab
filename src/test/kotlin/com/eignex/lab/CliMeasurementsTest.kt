@@ -28,7 +28,7 @@ class CliMeasurementsTest {
         Files.createDirectories(profile)
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
         builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
-        builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m -XX:ActiveProcessorCount=1 ${CliMeasurements.options(profile.toString())}"
+        builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m -XX:ActiveProcessorCount=1"
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()
@@ -39,6 +39,35 @@ class CliMeasurementsTest {
         val resources = Files.readString(profile.resolve("resources.txt"))
         assertTrue("exit=0" in resources)
         assertTrue(Regex("peakRssKiB=[1-9][0-9]*").containsMatchIn(resources))
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    fun `a version probe preserves solve artifacts and omits recording options`() {
+        val dir = Files.createTempDirectory("measurement")
+        val cli = dir.resolve(CliMeasurements.CLI)
+        Files.createDirectories(cli.parent)
+        Files.writeString(cli, "#!/bin/bash\nprintf '%s' \"\$KLAUSE_CLI_OPTS\"\n")
+        cli.toFile().setExecutable(true)
+        val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString())).start()
+        assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
+        val profile = dir.resolve("profile")
+        Files.createDirectories(profile)
+        val recording = byteArrayOf(1, 2, 3)
+        val resources = "peakRssKiB=123456\nexit=0\n"
+        Files.write(profile.resolve("cli.jfr"), recording)
+        Files.writeString(profile.resolve("resources.txt"), resources)
+        val builder = ProcessBuilder(cli.toString(), "--version")
+        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m -XX:ActiveProcessorCount=1"
+
+        val process = builder.start()
+        val output = process.inputStream.bufferedReader().readText()
+
+        assertEquals(0, process.waitFor())
+        assertEquals("-Xmx64m -XX:ActiveProcessorCount=1", output)
+        assertContentEquals(recording, Files.readAllBytes(profile.resolve("cli.jfr")))
+        assertEquals(resources, Files.readString(profile.resolve("resources.txt")))
     }
 
     @Test
