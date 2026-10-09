@@ -806,6 +806,7 @@ class AwsWorker(
                     appendLine("  tar -C $worktree -c klause-cli/build/install klause-bench/build/install | zstd -q -T0 | aws s3 cp - $archive --region ${aws.region} --only-show-errors || true")
                     appendLine("fi")
                 }
+                if (job.experiment?.profileCli == true) appendLine(CliMeasurements.install(worktree))
                 appendLine(Experiments.captureProvenance(worktree))
             }
             if (bucket != null) {
@@ -815,9 +816,6 @@ class AwsWorker(
         }
         val out = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) { host.ssh.run(script, BUILD_TIMEOUT_SEC) }
         log.appendText("[${host.instance}] $out\n")
-        if (job.experiment?.profileCli == true) {
-            for (sha in shas) host.ssh.run(CliMeasurements.install(host.worktree(sha)), SSH_STEP_SEC)
-        }
         runner.log(job.id, "${host.instance}: built")
     }
 
