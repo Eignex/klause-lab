@@ -27,6 +27,8 @@ data class Outcome(
     val loadError: String? = null,
     /** The solver's own `solveTime` statistic, in ms. */
     val solveTimeMs: Long? = null,
+    /** The solve's wall-clock time, as the bench timed its subprocess; null in records from before it was kept. */
+    val elapsedMs: Long? = null,
     val sourceValidation: String? = null,
     val sourceValidationReason: String? = null,
     val floatApproximation: Boolean = false,
@@ -40,10 +42,11 @@ data class Outcome(
 
     /**
      * The time a comparison charges a decided run: to its best solution, or, for a proof without one (an infeasibility
-     * proof has no solution), the solve time the solver reported. Only an undecided run, or a decided one that
-     * reported no time at all, is charged the whole budget, so a fast refutation never reads as a timeout.
+     * proof has no solution), the solve time the solver reported, else the solve's wall-clock time (a model refuted
+     * while flattening reports no solve time). Only an undecided run, or a decided one with no time at all, is charged
+     * the whole budget, so a fast refutation never reads as a timeout.
      */
-    val timeMs: Long get() = if (rank > 0) timeToBestMs ?: solveTimeMs ?: budgetMs else budgetMs
+    val timeMs: Long get() = if (rank > 0) timeToBestMs ?: solveTimeMs ?: elapsedMs ?: budgetMs else budgetMs
 
     companion object {
         fun of(record: JsonElement?): Outcome? {
@@ -70,6 +73,7 @@ data class Outcome(
                 floatApproximation = approximation,
                 solveTimeMs = stat(fields, "solveTime")?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
                     ?.let { (it * MS_PER_S).toLong() },
+                elapsedMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 },
             )
         }
 

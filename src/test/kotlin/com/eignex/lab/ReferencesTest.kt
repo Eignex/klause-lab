@@ -192,4 +192,30 @@ class ReferencesTest {
         assertEquals(listOf("scip|v", "repaired", 4.0, false), listOf(checked?.version, checked?.validation, checked?.dualBound, checked?.stale))
         assertEquals(true, unchecked?.stale)
     }
+
+    @Test
+    fun `a proof without a solve time is timed by the wall clock, and a rerun of it refreshes the stored row`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "hakank" to "building_a_house_model"
+        store.putReferences(listOf(key to ref(false, proven = true).copy(elapsedMs = 1000)), "old")
+        val record = Json.parseToJsonElement(
+            """{"solver":"cp-sat","budgetMs":1000,"feasible":false,"proven":true,"maximize":false,"elapsedMs":137,"stats":{"flatTime":"0.1"}}""",
+        )
+
+        val rerun = References.of(record)!!
+        val changed = store.putReferences(listOf(key to rerun), "rerun")
+
+        assertEquals(137L, rerun.elapsedMs)
+        assertEquals(1, changed)
+        assertEquals(137L, store.references(listOf(key)).getValue(key).elapsedMs)
+    }
+
+    @Test
+    fun `a comparison charges a proof without a solve time its wall-clock time`() {
+        val outcome = Outcome.of(Json.parseToJsonElement(
+            """{"kind":"satisfy","feasible":false,"proven":true,"budgetMs":60000,"elapsedMs":137,"stats":{}}""",
+        ))
+
+        assertEquals(137L, outcome?.timeMs)
+    }
 }

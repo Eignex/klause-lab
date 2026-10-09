@@ -133,8 +133,10 @@ as evidence, but a proof another solver's solution contradicts is set aside, whi
 and the `reference` filters see an infeasibility proof against a solution as undecided, and an optimum a better
 solution beats, or whose dual bound one lies beyond (by more than a relative 1e-6), as an unproven solution.
 
-Results are kept per (collection, problem, solver); a new one replaces a stored one only when it is stronger (decided
-over undecided, proven over unproven, then the better objective, then the bigger budget), so no proof is lost. A row
+Results are kept per (collection, problem, solver); a new one replaces a stored one unless the stored one is stronger
+(decided over undecided, proven over unproven, then the better objective, then the bigger budget), so no proof is lost
+and an equally strong rerun refreshes the row. A verdict is timed by the solver's solve time, else by the solve's
+wall-clock time (a model refuted while flattening reports no solve time), and only an undecided one by its budget. A row
 produced another way (its `version`: an MPS reference's solver build, options and how its solution was checked, see
 klause-bench's README) replaces the stored one whatever its strength, so a proof judged wrongly never outlives its
 correction. SCIP and HiGHS rows from before their solutions were checked are stale: kept on the problem pages as

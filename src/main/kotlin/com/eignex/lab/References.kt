@@ -143,9 +143,11 @@ object References {
         val stats = fields["stats"] as? JsonObject
         fun stat(name: String) = (stats?.get(name) as? JsonPrimitive)?.content
         val solveMs = stat("solveTime")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
+        // Without a solve time, as when MiniZinc refutes a model while flattening, the solve's wall-clock time.
+        val wallMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 }
         val elapsedMs = when {
-            proven -> solveMs ?: budgetMs
-            feasible == true -> field("timeToFirstFeasibleMs")?.longOrNull ?: solveMs ?: budgetMs
+            proven -> solveMs ?: wallMs ?: budgetMs
+            feasible == true -> field("timeToFirstFeasibleMs")?.longOrNull ?: solveMs ?: wallMs ?: budgetMs
             else -> budgetMs
         }
         return Reference(
@@ -170,11 +172,12 @@ object References {
 
     /** Whether [incoming] takes the place of the same solver's [stored] row: a current row always over a stale one and
      *  never the other way, then one produced another way, so a proof the old way judged wrongly never outlives its
-     *  correction, then the stronger verdict. */
+     *  correction, then any verdict at least as strong. */
     fun replaces(incoming: Reference, stored: Reference): Boolean = when {
         incoming.stale != stored.stale -> stored.stale
         incoming.version != stored.version -> true
-        else -> incoming != stored && stronger(incoming, stored)
+        // An equally strong verdict refreshes the row, so a rerun corrects how it was timed or recorded.
+        else -> incoming != stored && !stronger(stored, incoming)
     }
 
     /**
