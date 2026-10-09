@@ -24,6 +24,8 @@
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
+#   lab ssh <id> [n] [command...]                            a shell (or command) on instance n (default 0) of a running
+#                                                            AWS job, through the server with the lab's own key and host keys
 set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"
@@ -100,6 +102,15 @@ fetch)
     curl -fsS -o "$dest/$path" "$url/jobs/$1/files/$path"
   done ;;
 corpus) rsync -az --info=progress2 "$corpus/" "$host:.cache/klause-bench/corpus/" ;;
+ssh) job="$1"; n="${2:-0}"; shift; shift || true
+  # Instances are reached only from the server, which holds the key; their host keys are remembered by instance id,
+  # since AWS hands a terminated instance's address to the next one.
+  remote="cd $data/aws && id=\$(sed -n '$((n + 1))p' ../jobs/$job/aws-instances | cut -d' ' -f1) && [ -n \"\$id\" ] || { echo 'no such running instance' >&2; exit 1; }
+    region=\$(sed -n 's/^region=//p' aws.properties); profile=\$(sed -n 's/^profile=//p' aws.properties)
+    ip=\$(PATH=/opt/homebrew/bin:\$PATH aws --profile \$profile --region \$region ec2 describe-instances --instance-ids \$id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+    exec ssh -i klause-lab.pem -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=accept-new -o CheckHostIP=no \
+      -o HostKeyAlias=klause-lab-\$region-\$id ubuntu@\$ip $(printf '%q ' "$@")"
+  if [[ $# -eq 0 ]]; then exec ssh -t "$host" "$remote"; else exec ssh "$host" "$remote"; fi ;;
 health) curl -fsS "$url/health" | jq . ;;
 *) sed -n '2,/^set /{/^#/p}' "$0"; exit 2 ;;
 esac

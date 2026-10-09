@@ -238,7 +238,9 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   `4 × c7i.2xlarge, 2 cases each`.
 - A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
   SSH remembers each host key by region and EC2 instance ID, since AWS reuses public addresses after termination.
-  A new instance at a reused address may enroll its key; a changed key on the same instance is refused.
+  A new instance at a reused address may enroll its key; a changed key on the same instance is refused. So a plain
+  `ssh ubuntu@<address>` with the lab's `known_hosts` finds no key for the address and refuses in batch mode; reach a
+  running job's instance with `lab ssh <id> [n] [command]`, which connects through the server the way the lab does.
   It plans on the first, and the others fetch the same corpora before cases start. The instances share the job's
   problems: each takes the next one in plan order whenever it has room for a case, and a problem's arms, seeds and
   repeats all run on the instance that took it, so each comparison is made on one machine and no instance idles while
@@ -398,6 +400,7 @@ deploy/lab tail 7             # the last 8 kB of the job's log: planning, comman
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
+deploy/lab ssh 7 0 uptime     # a command on instance 0 of a running AWS job; no command opens a shell
 deploy/lab cancel 7
 ```
 
