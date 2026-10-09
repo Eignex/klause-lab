@@ -116,6 +116,15 @@ class AwsTest {
     }
 
     @Test
+    fun `a profiling job's launcher is installed before the provenance manifest describes the build`() {
+        val profiled = AwsWorker.finishWorktree("/w", profileCli = true)
+        val plain = AwsWorker.finishWorktree("/w", profileCli = false)
+
+        assertEquals(listOf(CliMeasurements.install("/w"), Experiments.captureProvenance("/w")), profiled)
+        assertEquals(listOf(Experiments.captureProvenance("/w")), plain)
+    }
+
+    @Test
     fun `an AWS job's machine count changes until it ends`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, description = "d")
