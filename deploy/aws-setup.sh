@@ -3,7 +3,8 @@
 # (`aws login`) that can ssh to the lab Mac:
 #   deploy/aws-setup.sh [user@lab-host]          default rasmusros@192.168.50.104
 # Settings: AWS_REGION (default eu-north-1), INSTANCE_TYPE (default c7i.2xlarge, the smallest size a job gets),
-# VCPU_QUOTA (default 32, the account's on-demand quota), MAX_INSTANCES (default 4: the account's default quota of 32 vCPUs on demand fits four 8-vCPU instances),
+# VCPU_QUOTA (default 128, the account's on-demand vCPU quota, raised from AWS's default of 32), MAX_INSTANCES (default 8,
+# a job's default instance count),
 # ADMIN_PROFILE (default: the CLI's default profile).
 #
 # It creates, or reuses when they exist:
@@ -19,8 +20,8 @@ set -euo pipefail
 host="${1:-rasmusros@192.168.50.104}"
 region="${AWS_REGION:-eu-north-1}"
 type="${INSTANCE_TYPE:-c7i.2xlarge}"
-max="${MAX_INSTANCES:-4}"
-quota="${VCPU_QUOTA:-32}"
+max="${MAX_INSTANCES:-8}"
+quota="${VCPU_QUOTA:-128}"
 # The sizes of the family a job may get, by the cores its cases need, as far as the vCPU quota reaches.
 family="${type%%.*}"
 types="$(for size in 2xlarge:8 4xlarge:16 8xlarge:32 12xlarge:48 16xlarge:64; do
