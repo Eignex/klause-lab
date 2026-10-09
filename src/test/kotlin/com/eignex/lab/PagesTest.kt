@@ -147,4 +147,15 @@ class PagesTest {
             assertFalse(config.jobDir(ended).toFile().exists())
         }
     }
+
+    @Test
+    fun `a trend run without disagreements still carries its per-suite counts to the charts`() {
+        val run = TrendRun(job = 1, sha = "abc", spec = "s", at = 0, finished = true, cases = 1, problems = 1,
+            solved = Estimate(1.0, 1.0, 1.0), proven = 0.0, unsupported = 0, errors = 0,
+            par2 = Estimate(1.0, 1.0, 1.0), suites = mapOf("hakank" to SuiteShare(1, 1.0)))
+
+        val page = trendPage("sweep", listOf(run), "https://example.com/repo")
+
+        assertContains(page, "\"disagreementsBySuite\":{}")
+    }
 }

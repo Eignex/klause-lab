@@ -431,6 +431,8 @@ internal fun comparePage(
     append("</body></html>")
 }
 
+private val trendJson = Json { encodeDefaults = true }
+
 /**
  * How a schedule's runs moved over its commits: solved and proven shares with the solved interval, PAR-2 time, and
  * solved share per suite, against commit or date. The runs ride in the page as JSON; a small script draws the charts.
@@ -504,7 +506,8 @@ internal fun trendPage(
     }
     append("</table></div><div id=\"tip\" class=\"tip\" hidden></div>")
     append("<script type=\"application/json\" id=\"trend-data\">")
-    append(Json.encodeToString(runs).replace("</", "<\\/"))
+    // Every field, defaults included: the script reads each run's fields without guarding for absent ones.
+    append(trendJson.encodeToString(runs).replace("</", "<\\/"))
     append("</script>")
     append(SCRIPT)
     append(TREND_SCRIPT)
@@ -708,7 +711,7 @@ private const val TREND_SCRIPT = """<script>
       draw(plot, [{name: s, color: 'var(--series-1)', value: function (r) { return r.suites[s] ? r.suites[s].solved : null; }}],
         {max: 1, ticks: [0, 0.5, 1], fmt: function (v) { return Math.round(v * 100) + '%'; }},
         {height: 130, endLabels: false, title: s + ' solved share per run', suite: s,
-          flagged: function (r) { return (r.disagreementsBySuite[s] || 0) > 0; }});
+          flagged: function (r) { return ((r.disagreementsBySuite || {})[s] || 0) > 0; }});
     }
   }
 
