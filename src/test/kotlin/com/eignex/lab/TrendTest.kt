@@ -26,6 +26,8 @@ class TrendTest {
         val incumbent = """{"kind":"optimize","feasible":true,"exactObjective":"7"}"""
         store.caseRecord(first, 0, optimum)
         store.caseRecord(second, 0, incumbent)
+        store.commandFinished(first, 0, 0)
+        store.commandFinished(second, 0, 0)
         val name = Confirm.name("sweep", "sha", second)
         val confirmation = store.create(name, "sha", emptyList(), experiment = ExperimentSpec(name, emptyList()))
         store.next()
@@ -33,8 +35,10 @@ class TrendTest {
         store.plan(confirmation, listOf(PlannedArm(Arm(Confirm.BEFORE, emptyMap()), "a"),
             PlannedArm(Arm(Confirm.AFTER, emptyMap()), "b")), listOf(problem),
             Experiments.cases(1, 2, emptyList(), 3), (0..5).map { "true" to 1L })
-        store.cases(confirmation).forEach { store.caseRecord(confirmation, it.index,
-            if (it.arm == Confirm.BEFORE) optimum else incumbent) }
+        store.cases(confirmation).forEach {
+            store.caseRecord(confirmation, it.index, if (it.arm == Confirm.BEFORE) optimum else incumbent)
+            store.commandFinished(confirmation, it.index, 0)
+        }
         store.finish(confirmation, Status.DONE)
         val result = Trend.runs(store, "sweep").last()
         assertEquals(0, result.lost)
