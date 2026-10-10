@@ -78,6 +78,33 @@ class ConfirmTest {
     }
 
     @Test
+    fun `legacy numeric objectives remain comparable while source mismatches cannot vote`() {
+        fun record(value: String, hashes: String = "") = optimization(null).copy(record = Json.parseToJsonElement(
+            """{"kind":"optimize","feasible":true,"objective":$value$hashes}"""))
+        assertEquals(1, Confirm.flips(listOf(record("1.25")), listOf(record("1.5"))).objectiveLost.size)
+        assertTrue(Confirm.flips(listOf(record("1", ",\"sourceHashes\":{\"model\":\"a\"}")),
+            listOf(record("2", ",\"sourceHashes\":{\"model\":\"b\"}"))).problems.isEmpty())
+    }
+
+    @Test
+    fun `proof confirmations pair seeds and require majority rather than any proof`() {
+        val before = (0..2).map { optimization("7", proven = true, repeat = it) }
+        val after = (0..2).map { optimization("7", proven = it != 0, repeat = it, arm = Confirm.AFTER) }
+        assertTrue(Confirm.confirmed(before + after).proofLost.isEmpty())
+        assertTrue(Confirm.flips(before, after.map { it.copy(seed = 5) }).proofLost.isEmpty())
+        assertEquals(1, Confirm.confirmed(before + after.map { it.copy(record = optimization("7").record) }).proofLost.size)
+    }
+
+    @Test
+    fun `infeasibility contradictions never earn proof credit and feasibility flips retain their old rule`() {
+        val noSolution = optimization(null, proven = true).copy(record = Json.parseToJsonElement(
+            """{"kind":"optimize","feasible":false,"proven":true}"""))
+        val solution = optimization("7")
+        assertTrue(Confirm.flips(listOf(noSolution), listOf(solution)).problems.isEmpty())
+        assertEquals(1, Confirm.flips(listOf(noSolution), listOf(case("opt", "x", false))).lost.size)
+    }
+
+    @Test
     fun `flips are the problems both runs ran that one solved and the other did not`() {
         val before = listOf(case("a", "x", true), case("b", "x", false), case("c", "x", true), case("only-before", "x", true))
         val after = listOf(case("a", "x", false), case("b", "x", true), case("c", "x", true))
