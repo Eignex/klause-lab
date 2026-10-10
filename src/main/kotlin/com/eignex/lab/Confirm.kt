@@ -83,7 +83,7 @@ object Confirm {
                     x.optimize != y.optimize || x.maximize != y.maximize) continue
                 val ox = objective(ca); val oy = objective(cb)
                 fun proof(o: Outcome, value: Exact?) = o.proven &&
-                    (o.feasible == false || !o.optimize || value != null)
+                    (o.feasible == false || (o.optimize && o.feasible == true && value != null))
                 val px = proof(x, ox); val py = proof(y, oy)
                 if (px && !py) pl++
                 if (!px && py) pg++

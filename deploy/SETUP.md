@@ -180,7 +180,8 @@ runs against each other problem by problem, not just by its totals:
 - Each run shows, against the run before it of the same experiment, the problems it lost and gained, with a two-sided
   sign test on them. Fifteen lost and none gained is p < 0.001 even when the solved shares' bands overlap.
 - Proof-strength changes and worse/better optimization incumbents also select problems for confirmation even when
-  both runs remain solved. These counts are separate from feasibility flips and their sign test. Objective comparisons
+  both runs remain solved. Proof means optimality or infeasibility; a satisfaction witness stays in the feasibility
+  count. These counts are separate from feasibility flips and their sign test. Objective comparisons
   honor minimize/maximize and compare exact integers/rationals before the legacy numeric channel; malformed exact
   objectives receive no quality credit. Rejected source witnesses and approximate-model proof claims receive no
   proof credit. Contradictory infeasibility or optimum claims select no proof/quality transition and remain disagreements.
