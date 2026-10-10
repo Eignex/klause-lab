@@ -78,6 +78,14 @@ class ConfirmTest {
     }
 
     @Test
+    fun `a satisfaction witness is not an optimization or infeasibility proof transition`() {
+        val sat = case("sat", "x", true)
+        val reportedProof = sat.copy(record = Json.parseToJsonElement(
+            """{"kind":"satisfy","feasible":true,"proven":true}"""))
+        assertTrue(Confirm.flips(listOf(reportedProof), listOf(sat)).proofLost.isEmpty())
+    }
+
+    @Test
     fun `legacy numeric objectives remain comparable while source mismatches cannot vote`() {
         fun record(value: String, hashes: String = "") = optimization(null).copy(record = Json.parseToJsonElement(
             """{"kind":"optimize","feasible":true,"objective":$value$hashes}"""))
