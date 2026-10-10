@@ -78,6 +78,16 @@ class ConfirmTest {
     }
 
     @Test
+    fun `infeasibility retains its existing implicit proof meaning when the flag is absent`() {
+        val claim = case("unsat", "x", false).copy(record = Json.parseToJsonElement(
+            """{"kind":"satisfy","feasible":false}"""))
+        val flagged = claim.copy(record = Json.parseToJsonElement(
+            """{"kind":"satisfy","feasible":false,"proven":true}"""))
+        assertTrue(Confirm.flips(listOf(claim), listOf(flagged)).problems.isEmpty())
+        assertTrue(Confirm.flips(listOf(flagged), listOf(claim)).problems.isEmpty())
+    }
+
+    @Test
     fun `a satisfaction witness is not an optimization or infeasibility proof transition`() {
         val sat = case("sat", "x", true)
         val reportedProof = sat.copy(record = Json.parseToJsonElement(
