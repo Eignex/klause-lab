@@ -83,8 +83,8 @@ object Confirm {
                 if (x.rank == 0 || y.rank == 0 || x.feasible != y.feasible ||
                     x.optimize != y.optimize || x.maximize != y.maximize) continue
                 val ox = objective(ca); val oy = objective(cb)
-                fun proof(o: Outcome, value: Exact?) = o.proven &&
-                    (o.feasible == false || (o.optimize && o.feasible == true && value != null))
+                fun proof(o: Outcome, value: Exact?) = o.feasible == false ||
+                    (o.optimize && o.proven && o.feasible == true && value != null)
                 val px = proof(x, ox); val py = proof(y, oy)
                 if (px && !py) pl++
                 if (!px && py) pg++
