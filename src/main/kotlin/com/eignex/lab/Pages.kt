@@ -518,7 +518,9 @@ internal fun trendPage(
 private fun flipCell(run: TrendRun): String = buildString {
     val lost = run.lost ?: return "–"
     val gained = run.gained ?: 0
-    append("−$lost +$gained")
+    append("feasibility −$lost +$gained")
+    append("; proof −${run.proofLost ?: 0} +${run.proofGained ?: 0}")
+    append("; objective −${run.objectiveLost ?: 0} +${run.objectiveGained ?: 0}")
     run.flipP?.takeIf { it < FLIP_SIGNIFICANCE }?.let { append(" <small>p=%.3f</small>".format(it)) }
     val job = run.confirmJob ?: return@buildString
     val confirmedLost = run.confirmedLost
@@ -527,8 +529,10 @@ private fun flipCell(run: TrendRun): String = buildString {
         if (confirmedLost == null) {
             "confirming"
         } else {
-            val cls = if (confirmedLost > 0) " class=\"FAILED\"" else ""
-            "<span$cls>confirmed −$confirmedLost +${run.confirmedGained ?: 0}</span>"
+            val cls = if (confirmedLost > 0 || (run.confirmedProofLost ?: 0) > 0 || (run.confirmedObjectiveLost ?: 0) > 0) " class=\"FAILED\"" else ""
+            "<span$cls>confirmed feasibility −$confirmedLost +${run.confirmedGained ?: 0}; " +
+                "proof −${run.confirmedProofLost ?: 0} +${run.confirmedProofGained ?: 0}; " +
+                "objective −${run.confirmedObjectiveLost ?: 0} +${run.confirmedObjectiveGained ?: 0}</span>"
         },
     )
     append("</a>")
@@ -673,6 +677,10 @@ private const val TREND_SCRIPT = """<script>
       ['proven', pct(r.proven)], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
       ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['worse incumbent', r.worse], ['problems', r.problems],
       ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
+      ['proof vs previous', r.proofLost == null ? '–' : '−' + r.proofLost + ' +' + r.proofGained],
+      ['objective vs previous', r.objectiveLost == null ? '–' : '−' + r.objectiveLost + ' +' + r.objectiveGained],
+      ['confirmed proof', r.confirmedProofLost == null ? '–' : '−' + r.confirmedProofLost + ' +' + r.confirmedProofGained],
+      ['confirmed objective', r.confirmedObjectiveLost == null ? '–' : '−' + r.confirmedObjectiveLost + ' +' + r.confirmedObjectiveGained],
       ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];
     if (suite && r.suites[suite]) rows.unshift([suite, pct(r.suites[suite].solved) + ' of ' + r.suites[suite].problems]);

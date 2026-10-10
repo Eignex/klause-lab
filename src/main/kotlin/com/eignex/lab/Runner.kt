@@ -209,10 +209,12 @@ class Runner(private val config: Config, private val store: Store) {
         val after = checkNotNull(store.job(job.id)?.sha)
         if (before == after) return
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
-        if (flips.lost.isEmpty() && flips.gained.isEmpty()) return
+        if (flips.problems.isEmpty()) return
         val confirmation = Confirm.spec(series, spec, before, after, flips, job.id)
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
-        log(job.id, "${flips.lost.size} lost, ${flips.gained.size} gained against job ${previous.id}: queued confirmation job $id")
+        log(job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
+            "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +
+            "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${previous.id}: queued confirmation job $id")
     }
 
     private fun firstArmCases(jobId: Long): List<CaseResult> {

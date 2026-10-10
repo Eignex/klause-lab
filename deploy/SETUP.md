@@ -179,7 +179,15 @@ runs against each other problem by problem, not just by its totals:
 
 - Each run shows, against the run before it of the same experiment, the problems it lost and gained, with a two-sided
   sign test on them. Fifteen lost and none gained is p < 0.001 even when the solved shares' bands overlap.
-- A finished run that flipped problems queues a confirmation job, `<schedule>~confirm@<sha>-<run>`: just those problems (at
+- Proof-strength changes and worse/better optimization incumbents also select problems for confirmation even when
+  both runs remain solved. These counts are separate from feasibility flips and their sign test. Objective comparisons
+  honor minimize/maximize and compare exact integers/rationals before the legacy numeric channel; malformed exact
+  objectives receive no quality credit. Rejected source witnesses and approximate-model proof claims receive no
+  proof credit. Contradictory infeasibility or optimum claims select no proof/quality transition and remain disagreements.
+  Proof and quality confirmations require a strict majority of matched seed/repeat blocks; missing, duplicate or
+  invalid blocks cannot vote, and missing blocks stay in the denominator. Timing differences never select a transition.
+  These are confirmations of recorded solver claims, not independent proof certification.
+- A finished run that changed feasibility, proof or objective queues a confirmation job, `<schedule>~confirm@<sha>-<run>`: the deduplicated union of those problems (at
   most 40), on both commits, alternating case by case so both see the same machine, three times each. A flip counts
   only when the repeats agree with it; the trend shows `confirmed −lost +gained`, linking the job, whose page compares
   the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.

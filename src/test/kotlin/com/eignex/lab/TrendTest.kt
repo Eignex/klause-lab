@@ -18,6 +18,34 @@ class TrendTest {
     }
 
     @Test
+    fun `proof only losses appear in trend and in completed confirmation counts`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val first = run(store, "sweep@aaa", listOf(true))
+        val second = run(store, "sweep@bbb", listOf(true))
+        val optimum = """{"kind":"optimize","feasible":true,"proven":true,"exactObjective":"7"}"""
+        val incumbent = """{"kind":"optimize","feasible":true,"exactObjective":"7"}"""
+        store.caseRecord(first, 0, optimum)
+        store.caseRecord(second, 0, incumbent)
+        val name = Confirm.name("sweep", "sha", second)
+        val confirmation = store.create(name, "sha", emptyList(), experiment = ExperimentSpec(name, emptyList()))
+        store.next()
+        val problem = Problem("a", "p0")
+        store.plan(confirmation, listOf(PlannedArm(Arm(Confirm.BEFORE, emptyMap()), "a"),
+            PlannedArm(Arm(Confirm.AFTER, emptyMap()), "b")), listOf(problem),
+            Experiments.cases(1, 2, emptyList(), 3), (0..5).map { "true" to 1L })
+        store.cases(confirmation).forEach { store.caseRecord(confirmation, it.index,
+            if (it.arm == Confirm.BEFORE) optimum else incumbent) }
+        store.finish(confirmation, Status.DONE)
+        val result = Trend.runs(store, "sweep").last()
+        assertEquals(0, result.lost)
+        assertEquals(1, result.proofLost)
+        assertEquals(0, result.objectiveLost)
+        assertEquals(confirmation, result.confirmJob)
+        assertEquals(1, result.confirmedProofLost)
+        assertEquals(0, result.confirmedLost)
+    }
+
+    @Test
     fun `a schedule's runs come oldest first with their solved shares, other jobs left out`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val first = run(store, "sweep@aaa", listOf(true, false, false, false))

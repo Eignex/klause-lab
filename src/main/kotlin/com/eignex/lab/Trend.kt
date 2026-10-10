@@ -44,6 +44,14 @@ data class TrendRun(
     val confirmJob: Long? = null,
     val confirmedLost: Int? = null,
     val confirmedGained: Int? = null,
+    val proofLost: Int? = null,
+    val proofGained: Int? = null,
+    val objectiveLost: Int? = null,
+    val objectiveGained: Int? = null,
+    val confirmedProofLost: Int? = null,
+    val confirmedProofGained: Int? = null,
+    val confirmedObjectiveLost: Int? = null,
+    val confirmedObjectiveGained: Int? = null,
     /** Mean PAR-2 seconds. */
     val par2: Estimate,
     val suites: Map<String, SuiteShare>,
@@ -81,7 +89,9 @@ object Trend {
                     ?: return@mapNotNull null
                 val flips = previous?.takeIf { it.first == trend.spec && job.status == Status.DONE }
                     ?.let { Confirm.flips(own(it.second), own(job.id)) }
-                trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue)
+                trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
+                    proofLost = flips?.proofLost?.size, proofGained = flips?.proofGained?.size,
+                    objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size)
                     .also { if (finished) cache?.put(job.id, stamp, it) }
             }
             if (job.status == Status.DONE) previous = base.spec to job.id
@@ -91,6 +101,10 @@ object Trend {
                 confirmJob = confirmation?.id,
                 confirmedLost = confirmed?.lost?.size,
                 confirmedGained = confirmed?.gained?.size,
+                confirmedProofLost = confirmed?.proofLost?.size,
+                confirmedProofGained = confirmed?.proofGained?.size,
+                confirmedObjectiveLost = confirmed?.objectiveLost?.size,
+                confirmedObjectiveGained = confirmed?.objectiveGained?.size,
             )
         }
     }
