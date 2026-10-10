@@ -14,6 +14,69 @@ class ConfirmTest {
         repeat = repeat,
     )
 
+    private fun optimization(value: String?, proven: Boolean = false, maximize: Boolean = false,
+                             repeat: Int = 0, arm: String = Confirm.BEFORE, extra: String = "") = CaseResult(
+        repeat, Status.DONE, Problem("s", "opt"), arm, seed = 3,
+        record = Json.parseToJsonElement("""{"kind":"optimize","feasible":true,"proven":$proven,
+            "maximize":$maximize,"objective":9007199254740992${value?.let { ",\"exactObjective\":\"$it\"" } ?: ""}$extra}"""),
+        repeat = repeat,
+    )
+
+    @Test
+    fun `still solved proof losses and gains are selected separately from feasibility`() {
+        val before = listOf(optimization("7", proven = true))
+        val after = listOf(optimization("7"))
+        val loss = Confirm.flips(before, after)
+        assertTrue(loss.lost.isEmpty())
+        assertEquals(listOf("opt"), loss.proofLost.map { it.problem })
+        assertEquals(loss.proofLost, Confirm.flips(after, before).proofGained)
+        assertEquals(loss.problems, Confirm.spec("s", ExperimentSpec("s", emptyList()), "a", "b", loss, 1).problemList)
+    }
+
+    @Test
+    fun `objectives compare exact values past doubles and rational values in each direction`() {
+        for ((a, b) in listOf("9007199254740992" to "9007199254740993", "1/3" to "2/5")) {
+            val loss = Confirm.flips(listOf(optimization(a)), listOf(optimization(b)))
+            assertEquals(listOf("opt"), loss.objectiveLost.map { it.problem })
+            assertTrue(loss.lost.isEmpty())
+            assertEquals(loss.objectiveLost, Confirm.flips(listOf(optimization(a, maximize = true)),
+                listOf(optimization(b, maximize = true))).objectiveGained)
+        }
+        assertTrue(Confirm.flips(listOf(optimization("2/6")), listOf(optimization("1/3"))).problems.isEmpty())
+    }
+
+    @Test
+    fun `malformed exact values cannot fall back or establish optimal proof strength`() {
+        val invalid = listOf(optimization("1/0", proven = true))
+        val valid = listOf(optimization("7"))
+        assertTrue(Confirm.flips(invalid, valid).problems.isEmpty())
+    }
+
+    @Test
+    fun `contradicted proof and rejected witnesses cannot earn proof or objective transitions`() {
+        assertTrue(Confirm.flips(listOf(optimization("7", proven = true)),
+            listOf(optimization("6"))).problems.isEmpty())
+        assertTrue(Confirm.flips(listOf(optimization("7", proven = true)),
+            listOf(optimization("8", proven = true))).problems.isEmpty())
+        for (stats in listOf("\"sourceValidation\":\"invalid\"", "\"floatApproximation\":true,\"sourceValidation\":\"valid\"")) {
+            val rejected = listOf(optimization("7", proven = true, extra = ",\"stats\":{$stats}"))
+            assertTrue(Confirm.flips(rejected, listOf(optimization("7"))).proofLost.isEmpty())
+        }
+    }
+
+    @Test
+    fun `quality confirmation requires a majority of complete matching blocks and ignores time`() {
+        val before = (0..2).map { optimization("7", repeat = it) }
+        val after = (0..2).map { optimization(if (it == 0) "8" else "7", repeat = it, arm = Confirm.AFTER) }
+        assertTrue(Confirm.confirmed(before + after).objectiveLost.isEmpty())
+        val held = (0..2).map { optimization("8", repeat = it, arm = Confirm.AFTER) }
+        assertEquals(1, Confirm.confirmed(before + held).objectiveLost.size)
+        assertTrue(Confirm.confirmed(before + held.take(1)).objectiveLost.isEmpty())
+        assertTrue(Confirm.confirmed(before + held + held).objectiveLost.isEmpty())
+        assertTrue(Confirm.flips(before, before.map { it.copy(record = Json.parseToJsonElement(
+            """{"kind":"optimize","feasible":true,"exactObjective":"7","timeToBestMs":9000}""")) }).problems.isEmpty())
+    }
+
     @Test
     fun `flips are the problems both runs ran that one solved and the other did not`() {
         val before = listOf(case("a", "x", true), case("b", "x", false), case("c", "x", true), case("only-before", "x", true))

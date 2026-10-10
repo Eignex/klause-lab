@@ -1,6 +1,10 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import java.math.BigInteger
+import java.math.BigDecimal
 
 /** One sweep run against the run before it of the same experiment, problem by problem. */
 @Serializable
@@ -9,7 +13,13 @@ data class Flips(
     val lost: List<Problem>,
     /** Problems this run solved and the earlier one did not. */
     val gained: List<Problem>,
+    val proofLost: List<Problem> = emptyList(),
+    val proofGained: List<Problem> = emptyList(),
+    val objectiveLost: List<Problem> = emptyList(),
+    val objectiveGained: List<Problem> = emptyList(),
 ) {
+    val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained).distinctBy { it.suite to it.problem }
+
     /** Two-sided sign test on the flips: how likely so lopsided a split is if each flip goes either way at random. */
     val pValue: Double get() = Confirm.signTest(lost.size, gained.size)
 }
@@ -24,7 +34,7 @@ object Confirm {
     /** Appended to a schedule's name for its confirmation jobs, which keeps them out of the schedule's trend. */
     const val SUFFIX = "~confirm"
     const val REPEATS = 3
-    /** The most flips one confirmation reruns; more than this is a change no rerun is needed to see. */
+    /** The maximum number of distinct problems one confirmation reruns. Unselected problems stay unconfirmed. */
     const val MAX_PROBLEMS = 40
     const val BEFORE = "before"
     const val AFTER = "after"
@@ -35,16 +45,103 @@ object Confirm {
             .groupBy({ it.first.suite to it.first.problem }, { if (it.second.rank > 0) 1.0 else 0.0 })
             .mapValues { (_, runs) -> runs.average() }
 
-    /** What [after] solved differently from [before], over the problems both ran; a problem's runs count by majority. */
+    /** Feasibility keeps its historical majority rule; proof and quality use matched seed/repeat blocks.
+     * Missing/invalid blocks cannot vote, but remain in the denominator. Time never selects a transition.
+     */
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
         val was = solved(before)
         val now = solved(after)
         val problems = (before + after).associateBy { it.problem.suite to it.problem.problem }
         val both = was.keys.intersect(now.keys).sortedWith(compareBy({ it.first }, { it.second }))
-        return Flips(
-            lost = both.filter { was.getValue(it) >= HALF && now.getValue(it) < HALF }.map { problems.getValue(it).problem },
-            gained = both.filter { was.getValue(it) < HALF && now.getValue(it) >= HALF }.map { problems.getValue(it).problem },
-        )
+        val lost = both.filter { was.getValue(it) >= HALF && now.getValue(it) < HALF }
+        val gained = both.filter { was.getValue(it) < HALF && now.getValue(it) >= HALF }
+        val proofLost = mutableListOf<Problem>()
+        val proofGained = mutableListOf<Problem>()
+        val objectiveLost = mutableListOf<Problem>()
+        val objectiveGained = mutableListOf<Problem>()
+        for (key in both - lost.toSet() - gained.toSet()) {
+            val left = before.filter { (it.problem.suite to it.problem.problem) == key }
+            val right = after.filter { (it.problem.suite to it.problem.problem) == key }
+            val all = left + right
+            // A contradicted proof is evidence of disagreement, never evidence of an improvement/loss.
+            if (contradictory(all)) continue
+            fun blocks(cases: List<CaseResult>) = cases.groupBy { it.seed to it.repeat }
+            val a = blocks(left)
+            val b = blocks(right)
+            val keys = a.keys + b.keys
+            var pl = 0; var pg = 0; var ol = 0; var og = 0
+            for (block in keys) {
+                val ca = a[block]?.singleOrNull() ?: continue
+                val cb = b[block]?.singleOrNull() ?: continue
+                if (ca.status != Status.DONE || cb.status != Status.DONE) continue
+                val hashesA = (ca.record as? JsonObject)?.get("sourceHashes")
+                val hashesB = (cb.record as? JsonObject)?.get("sourceHashes")
+                if (hashesA != null && hashesB != null && hashesA != hashesB) continue
+                val x = Outcome.of(ca.record) ?: continue
+                val y = Outcome.of(cb.record) ?: continue
+                if (x.rank == 0 || y.rank == 0 || x.feasible != y.feasible ||
+                    x.optimize != y.optimize || x.maximize != y.maximize) continue
+                val ox = objective(ca); val oy = objective(cb)
+                fun proof(o: Outcome, value: Exact?) = o.proven &&
+                    (o.feasible == false || !o.optimize || value != null)
+                val px = proof(x, ox); val py = proof(y, oy)
+                if (px && !py) pl++
+                if (!px && py) pg++
+                if (x.optimize && x.feasible == true && ox != null && oy != null) {
+                    val cmp = oy.compareTo(ox) * if (x.maximize) -1 else 1
+                    if (cmp > 0) ol++
+                    if (cmp < 0) og++
+                }
+            }
+            val problem = problems.getValue(key).problem
+            if (pl > keys.size / 2) proofLost += problem
+            if (pg > keys.size / 2) proofGained += problem
+            if (ol > keys.size / 2) objectiveLost += problem
+            if (og > keys.size / 2) objectiveGained += problem
+        }
+        return Flips(lost.map { problems.getValue(it).problem }, gained.map { problems.getValue(it).problem },
+            proofLost, proofGained, objectiveLost, objectiveGained)
+    }
+
+    private fun contradictory(cases: List<CaseResult>): Boolean {
+        val valid = cases.mapNotNull { c -> Outcome.of(c.record)?.takeIf { it.rank > 0 }?.let { Triple(c, it, objective(c)) } }
+        if (valid.any { it.second.feasible == false } && valid.any { it.second.feasible == true }) return true
+        if (valid.map { it.second.optimize to it.second.maximize }.distinct().size > 1) return true
+        val optima = valid.filter { it.second.optimize && it.second.proven && it.third != null }
+        return optima.any { (_, proof, value) -> valid.any { (_, o, v) ->
+            v != null && (if (proof.maximize) v > value!! else v < value!!) ||
+                (o.proven && v != null && v.compareTo(value!!) != 0)
+        } }
+    }
+
+    /** Exact text is authoritative: malformed exact text cannot fall back to a rounded display value. */
+    private fun objective(case: CaseResult): Exact? {
+        val record = case.record as? JsonObject ?: return null
+        val rawExact = record["exactObjective"]
+        if (rawExact != null && rawExact !is JsonPrimitive) return null
+        val exact = rawExact as? JsonPrimitive
+        val text = exact?.content?.takeUnless { it == "null" }
+        if (text != null) return Exact.parse(text)
+        val value = (record["objective"] as? JsonPrimitive)?.content ?: return null
+        return runCatching {
+            val decimal = BigDecimal(value)
+            val scale = decimal.scale()
+            if (scale >= 0) Exact(decimal.unscaledValue(), BigInteger.TEN.pow(scale))
+            else Exact(decimal.unscaledValue() * BigInteger.TEN.pow(-scale), BigInteger.ONE)
+        }.getOrNull()
+    }
+
+    private data class Exact(val numerator: BigInteger, val denominator: BigInteger) : Comparable<Exact> {
+        override fun compareTo(other: Exact) = (numerator * other.denominator).compareTo(other.numerator * denominator)
+        companion object {
+            fun parse(text: String): Exact? = runCatching {
+                require(text.matches(Regex("[+-]?[0-9]+(/[0-9]+)?")))
+                val parts = text.split('/')
+                val d = if (parts.size == 2) BigInteger(parts[1]) else BigInteger.ONE
+                require(d.signum() > 0)
+                Exact(BigInteger(parts[0]), d)
+            }.getOrNull()
+        }
     }
 
     /** The name of the confirmation of run [job] of [series] at [after]: the run's id keeps two runs of one commit apart. */
@@ -56,9 +153,11 @@ object Confirm {
         return ExperimentSpec(
             name = name(series, after, job),
             description = "Confirms run $job's flips against the run before it at ${before.take(SHA_LENGTH)}: " +
-                "${flips.lost.size} lost and ${flips.gained.size} gained, rerun $REPEATS times on both commits.",
+                "${flips.lost.size} feasibility lost and ${flips.gained.size} gained; " +
+                "${flips.proofLost.size} proof lost and ${flips.proofGained.size} gained; " +
+                "${flips.objectiveLost.size} objective worse and ${flips.objectiveGained.size} better, rerun $REPEATS times on both commits.",
             problems = emptyList(),
-            problemList = (flips.lost + flips.gained).take(MAX_PROBLEMS),
+            problemList = flips.problems.take(MAX_PROBLEMS),
             base = spec.base - "ref",
             configs = listOf(config + mapOf("label" to BEFORE, "ref" to before), config + mapOf("label" to AFTER, "ref" to after)),
             seeds = spec.seeds,
