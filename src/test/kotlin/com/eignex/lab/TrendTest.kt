@@ -53,4 +53,22 @@ class TrendTest {
 
         assertEquals(listOf(null to null, 1 to 1), runs.map { it.lost to it.gained })
     }
+
+    @Test
+    fun `a finished run's point is reused until the references change and the point has aged`() {
+        var now = 0L
+        val cache = TrendCache(maxReferenceLagMs = 1000) { now }
+        val run = TrendRun(job = 1, sha = "a", spec = "s", at = 0, finished = true, cases = 1, problems = 1,
+            solved = Estimate(1.0, 1.0, 1.0), proven = 0.0, unsupported = 0, errors = 0,
+            par2 = Estimate(1.0, 1.0, 1.0), suites = emptyMap())
+        cache.put(1, stamp = 5, run)
+
+        now = 500
+        val fresh = listOf(cache.get(1, stamp = 5), cache.get(1, stamp = 6))
+        now = 2000
+        val aged = listOf(cache.get(1, stamp = 5), cache.get(1, stamp = 6))
+
+        assertEquals(listOf(run, run), fresh)
+        assertEquals(listOf(run, null), aged)
+    }
 }

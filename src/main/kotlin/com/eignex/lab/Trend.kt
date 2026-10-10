@@ -50,30 +50,44 @@ data class TrendRun(
 )
 
 object Trend {
-    /** Every run a schedule named [name] queued, oldest first; an experiment of several arms is read by its first. */
-    fun runs(store: Store, name: String): List<TrendRun> {
+    /**
+     * Every run a schedule named [name] queued, oldest first; an experiment of several arms is read by its first. A
+     * finished run's point comes from [cache] when it has one: its cases never change, only the reference rows its
+     * disagreement and shortfall counts read, so a cached point is recomputed once those rows changed and it is older
+     * than [TrendCache.maxReferenceLagMs]. A confirmation's counts are read afresh, since it can end after its run.
+     */
+    fun runs(store: Store, name: String, cache: TrendCache? = null): List<TrendRun> {
         val jobs = store.jobs(limit = MAX_RUNS, name = name)
             .filter { it.experiment != null && it.name.startsWith("$name@") && it.status != Status.CANCELLED }
             .sortedBy { it.id }
         val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX)
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
             .associateBy { it.name }
-        var previous: Pair<String, List<CaseResult>>? = null
+        val stamp = cache?.let { store.referencesStamp() }
+        // The previous finished run of each spec: its first arm's cases, loaded only when a run after it is computed.
+        var previous: Pair<String, Long>? = null
+        val ownCases = HashMap<Long, List<CaseResult>>()
+        fun own(job: Long): List<CaseResult> = ownCases.getOrPut(job) {
+            val label = store.arms(job).firstOrNull()?.arm?.label
+            store.cases(job).filter { it.arm == label }
+        }
         return jobs.mapNotNull { job ->
-            val arms = store.arms(job.id)
-            val cases = store.cases(job.id)
-            val own = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
-            val trend = run(job, arms, cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
-                ?: return@mapNotNull null
-            val spec = trend.spec
-            val flips = previous?.takeIf { it.first == spec && job.status == Status.DONE }?.let { Confirm.flips(it.second, own) }
-            if (job.status == Status.DONE) previous = spec to own
+            val finished = job.status !in ACTIVE
+            val base = cache?.takeIf { finished }?.get(job.id, stamp) ?: run {
+                val arms = store.arms(job.id)
+                val cases = store.cases(job.id)
+                ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
+                val trend = run(job, arms, cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
+                    ?: return@mapNotNull null
+                val flips = previous?.takeIf { it.first == trend.spec && job.status == Status.DONE }
+                    ?.let { Confirm.flips(own(it.second), own(job.id)) }
+                trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue)
+                    .also { if (finished) cache?.put(job.id, stamp, it) }
+            }
+            if (job.status == Status.DONE) previous = base.spec to job.id
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
             val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(store.cases(it.id)) }
-            trend.copy(
-                lost = flips?.lost?.size,
-                gained = flips?.gained?.size,
-                flipP = flips?.pValue,
+            base.copy(
                 confirmJob = confirmation?.id,
                 confirmedLost = confirmed?.lost?.size,
                 confirmedGained = confirmed?.gained?.size,
@@ -122,4 +136,28 @@ object Trend {
     }
 
     private const val MAX_RUNS = 500
+}
+
+/**
+ * Finished runs' trend points, kept between requests: a schedule's trend reads every run it has, and recomputing a
+ * hundred finished runs on each page load, the page reloading itself while a run is going, kept the API busy.
+ */
+class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private val clock: () -> Long = System::currentTimeMillis) {
+    private class Entry(val stamp: Long?, val at: Long, val run: TrendRun)
+
+    private val entries = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
+
+    /** [job]'s point, unless the reference rows changed since ([stamp]) and it is older than [maxReferenceLagMs]. */
+    fun get(job: Long, stamp: Long?): TrendRun? {
+        val entry = entries[job] ?: return null
+        return entry.run.takeIf { entry.stamp == stamp || clock() - entry.at <= maxReferenceLagMs }
+    }
+
+    fun put(job: Long, stamp: Long?, run: TrendRun) {
+        entries[job] = Entry(stamp, clock(), run)
+    }
+
+    private companion object {
+        const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L
+    }
 }

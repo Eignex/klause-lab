@@ -79,6 +79,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     install(StatusPages) {
         exception<IllegalArgumentException> { call, e -> call.respondText(e.message ?: "bad request", status = HttpStatusCode.BadRequest) }
     }
+    val trendCache = TrendCache()
     routing {
         get("/") {
             val before = call.parameters["before"]?.toLong()
@@ -119,7 +120,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val schedules = store.schedules()
                 .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
-            val runs = name?.let { Trend.runs(store, it) }.orEmpty()
+            val runs = name?.let { Trend.runs(store, it, trendCache) }.orEmpty()
             // By default only the runs of the schedule's current experiment: a run of an earlier one measured
             // something else, and plotted alongside reads as a regression.
             val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(it.experiment) }

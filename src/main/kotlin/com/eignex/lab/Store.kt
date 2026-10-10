@@ -646,6 +646,12 @@ class Store(file: Path) {
         References.conflicts(rows).map { Disagreement(Problem("", key.second, collection = key.first), it) }
     }
 
+    /** When any reference row last changed: what tells a cached comparison against the references that it is stale. */
+    @Synchronized
+    fun referencesStamp(): Long? = connection.prepareStatement("SELECT MAX(updated_at) FROM reference_rows").use { statement ->
+        statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
+    }
+
     /** Per collection and solver: rows, decided, proven, infeasible, and when last updated. */
     @Synchronized
     fun referenceCoverage(): List<ReferenceCoverage> = connection.prepareStatement(
