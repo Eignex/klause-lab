@@ -75,8 +75,8 @@ object Confirm {
                 val ca = a[block]?.singleOrNull() ?: continue
                 val cb = b[block]?.singleOrNull() ?: continue
                 if (ca.status != Status.DONE || cb.status != Status.DONE) continue
-                val hashesA = (ca.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull }
-                val hashesB = (cb.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull }
+                val hashesA = (ca.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull || (it is JsonObject && it.isEmpty()) }
+                val hashesB = (cb.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull || (it is JsonObject && it.isEmpty()) }
                 if (hashesA != null && hashesB != null && hashesA != hashesB) continue
                 val x = Outcome.of(ca.record) ?: continue
                 val y = Outcome.of(cb.record) ?: continue

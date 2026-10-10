@@ -102,6 +102,8 @@ class ConfirmTest {
         assertEquals(1, Confirm.flips(listOf(record("1.25")), listOf(record("1.5"))).objectiveLost.size)
         assertEquals(1, Confirm.flips(listOf(record("1", ",\"sourceHashes\":null")),
             listOf(record("2", ",\"sourceHashes\":{\"model\":\"b\"}"))).objectiveLost.size)
+        assertEquals(1, Confirm.flips(listOf(record("1", ",\"sourceHashes\":{}")),
+            listOf(record("2", ",\"sourceHashes\":{\"model\":\"b\"}"))).objectiveLost.size)
         assertTrue(Confirm.flips(listOf(record("1", ",\"sourceHashes\":{\"model\":\"a\"}")),
             listOf(record("2", ",\"sourceHashes\":{\"model\":\"b\"}"))).problems.isEmpty())
     }
