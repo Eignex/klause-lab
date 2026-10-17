@@ -378,14 +378,51 @@ class StoreTest {
     }
 
     @Test
-    fun `a job queued for the lab machine goes before an auto job there, and an auto job running there gives way to it`() {
+    fun `a yielded auto job waits for a lower priority job queued for the lab machine`() {
         val store = store()
         val auto = autoJob(store, "a", priority = 5)
         assertEquals(auto, store.next()?.id)
         assertEquals(false, store.shouldYield(auto))
-        store.create("sweep", "main", listOf("true" to 10L), priority = -2)
+        val sweep = store.create("sweep", "main", listOf("true" to 10L), priority = -2)
 
         assertEquals(true, store.shouldYield(auto))
+        store.requeue(auto)
+        assertEquals(listOf(sweep, auto), store.queueOrder())
+        assertEquals(sweep, store.next()?.id)
+        assertEquals(false, store.shouldYield(sweep))
+        store.finish(sweep, Status.DONE)
+        assertEquals(auto, store.next()?.id)
+        assertEquals(false, store.shouldYield(auto))
+    }
+
+    @Test
+    fun `priority orders claimed auto jobs on the lab machine`() {
+        val store = store()
+        val low = autoJob(store, "low")
+        store.next()
+        val high = store.create("high", "main", emptyList(), priority = 5,
+            experiment = ExperimentSpec("high", host = Experiments.LAB_HOST, auto = true))
+
+        assertEquals(true, store.shouldYield(low))
+        store.requeue(low)
+        assertEquals(listOf(high, low), store.queueOrder())
+        assertEquals(high, store.next()?.id)
+        assertEquals(false, store.shouldYield(high))
+    }
+
+    @Test
+    fun `AWS priority orders claimed auto jobs with jobs queued for AWS`() {
+        val store = store()
+        val auto = store.create("auto", "main", emptyList(), priority = 5,
+            experiment = ExperimentSpec("auto", host = Experiments.AWS_HOST, auto = true))
+        val fixed = store.create("fixed", "main", emptyList(), priority = -2,
+            experiment = ExperimentSpec("fixed", host = Experiments.AWS_HOST))
+
+        assertEquals(listOf(auto, fixed), store.queueOrder(Experiments.AWS_HOST))
+        assertEquals(auto, store.next(Experiments.AWS_HOST)?.id)
+        assertEquals(false, store.shouldYield(auto))
+        store.finish(auto, Status.DONE)
+        assertEquals(fixed, store.next(Experiments.AWS_HOST)?.id)
     }
 
     @Test

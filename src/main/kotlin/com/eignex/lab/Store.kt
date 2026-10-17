@@ -490,7 +490,8 @@ class Store(file: Path) {
 
     /**
      * The job to work on: one left RUNNING by a crashed runner first, else the queued, unpaused job with the highest
-     * priority, claimed. Among equals, the job whose series last finished a run longest ago goes first, one that never
+     * priority, claimed. On the lab machine, jobs queued for it precede claimed `auto` jobs regardless of priority.
+     * Among equals, the job whose series last finished a run longest ago goes first, one that never
      * has before any that has, then the oldest: so a schedule that just ran cannot keep going ahead of one that has
      * waited. A series is a schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
      */
@@ -930,18 +931,18 @@ class Store(file: Path) {
     /** Whether running [jobId] should stop starting commands: it was paused, or a job it must give way to waits. */
     @Synchronized
     fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
-        // An auto job the machine took gives way to any job queued for the machine itself, whatever its priority.
         "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE status = ? " +
             "AND cancel_requested = 0 AND paused = 0 AND $HOST = (SELECT $HOST FROM jobs WHERE id = ?) " +
-            "AND (priority > (SELECT priority FROM jobs WHERE id = ?) OR " +
-            "COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) = 1 AND " +
-            "COALESCE(json_extract(experiment, '\$.auto'), 0) = 0))",
+            "AND ($QUEUE_CLASS < (SELECT $QUEUE_CLASS FROM jobs WHERE id = ?) OR " +
+            "$QUEUE_CLASS = (SELECT $QUEUE_CLASS FROM jobs WHERE id = ?) AND " +
+            "priority > (SELECT priority FROM jobs WHERE id = ?)))",
     ).use {
         it.setLong(1, jobId)
         it.setString(2, Status.QUEUED.name)
         it.setLong(3, jobId)
         it.setLong(4, jobId)
         it.setLong(5, jobId)
+        it.setLong(6, jobId)
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
@@ -1102,12 +1103,16 @@ fun now(): Long = System.currentTimeMillis()
 private const val SERIES_J = "CASE WHEN instr(jobs.name, '@') > 0 THEN substr(jobs.name, 1, instr(jobs.name, '@') - 1) ELSE jobs.name END"
 private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.name, 1, instr(r.name, '@') - 1) ELSE r.name END"
 
-/** How [Store.next] orders queued jobs: by priority, then the series that last finished a run longest ago, then age. */
-private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
-    "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
-
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
+
+// Selection and preemption must agree, or a claimed auto job can be selected just to yield again.
+private const val QUEUE_CLASS = "CASE WHEN $HOST = 'lab' THEN COALESCE(json_extract(experiment, '\$.auto'), 0) ELSE 0 END"
+
+/** How [Store.next] orders queued jobs: host precedence, priority, the series' last finished run, then age. */
+private const val QUEUE_ORDER = "ORDER BY $QUEUE_CLASS, priority DESC, " +
+    "(SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+    "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
 
 /** How long a queued `auto` job waits for the lab machine before AWS may take it. */
 internal const val AUTO_GRACE_MS = 60_000L
